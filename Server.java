@@ -59,15 +59,16 @@ public class Server {
                 } else if (line.startsWith("GETKEY|")) {
                     String[] parts = line.split("\\|", 2);
                     if (parts.length == 2) {
-                        String key = publicKeys.get(parts[1].trim());
-                        out.println(key != null ? key : "null");
+                        String peer = parts[1].trim();
+                        String key = clients.containsKey(peer) ? publicKeys.get(peer) : null;
+                        out.println("KEY|" + (key != null ? key : "null"));
                     }
                 } else {
                     String[] parts = line.split("\\|", 2);
                     if (parts.length == 2) {
                         PrintWriter recipientOut = writers.get(parts[0].trim());
                         if (recipientOut != null) {
-                            recipientOut.println(parts[1]);
+                            recipientOut.println("MSG|" + username + "|" + parts[1]);
                         }
                     }
                 }
@@ -78,6 +79,7 @@ public class Server {
             if (username != null) {
                 clients.remove(username);
                 writers.remove(username);
+                publicKeys.remove(username);
                 log.info(username + " disconnected");
             }
             try { socket.close(); } catch (IOException ignored) {}

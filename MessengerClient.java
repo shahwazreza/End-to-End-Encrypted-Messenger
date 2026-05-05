@@ -9,8 +9,10 @@ import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.List;
 import java.util.function.Consumer;
 import java.util.logging.Logger;
 
@@ -70,12 +72,25 @@ public class MessengerClient {
                 Base64.getEncoder().encodeToString(myKeys.getPublic().getEncoded()));
 
         String peerKeyB64 = null;
+        List<String> pendingMessages = new ArrayList<>();
         long deadline = System.currentTimeMillis() + PEER_KEY_TIMEOUT_MS;
         while (peerKeyB64 == null || peerKeyB64.equals("null")) {
             if (System.currentTimeMillis() >= deadline)
                 throw new Exception("Timed out waiting for '" + peer + "' to connect");
             out.println("GETKEY|" + peer);
-            peerKeyB64 = in.readLine();
+            String response = in.readLine();
+            if (response == null) throw new EOFException("Disconnected while waiting for peer key");
+            if (response.startsWith("MSG|")) {
+                String[] parts = response.split("\\|", 3);
+                if (parts.length == 3 && parts[1].equals(peer)) {
+                    pendingMessages.add(parts[2]);
+                }
+                continue;
+            }
+            if (!response.startsWith("KEY|")) {
+                continue;
+            }
+            peerKeyB64 = response.substring(4);
             if ("null".equals(peerKeyB64)) {
                 Thread.sleep(500);
                 peerKeyB64 = null;
@@ -87,18 +102,17 @@ public class MessengerClient {
         shared = KeyDerivation.deriveSharedKey(myKeys.getPrivate(), peerPublic);
 
         if (onConnected != null) onConnected.run();
+        for (String pendingMessage : pendingMessages) {
+            handleEncryptedMessage(pendingMessage);
+        }
 
         String msg;
         while ((msg = in.readLine()) != null) {
-            byte[] bytes = Base64.getDecoder().decode(msg);
-            Encryption.EncryptedData data = new Encryption.EncryptedData();
-            data.iv         = Arrays.copyOfRange(bytes, 0, 12);
-            data.ciphertext = Arrays.copyOfRange(bytes, 12, bytes.length);
-            try {
-                String decrypted = Encryption.decrypt(data, shared);
-                if (onMessageReceived != null) onMessageReceived.accept(decrypted);
-            } catch (Exception e) {
-                log.warning("Decryption failed: " + e.getMessage());
+            if (msg.startsWith("MSG|")) {
+                String[] parts = msg.split("\\|", 3);
+                if (parts.length == 3 && parts[1].equals(peer)) {
+                    handleEncryptedMessage(parts[2]);
+                }
             }
         }
 
@@ -112,6 +126,19 @@ public class MessengerClient {
         System.arraycopy(enc.iv,         0, combined, 0,              enc.iv.length);
         System.arraycopy(enc.ciphertext, 0, combined, enc.iv.length,  enc.ciphertext.length);
         out.println(peer + "|" + Base64.getEncoder().encodeToString(combined));
+    }
+
+    private void handleEncryptedMessage(String payload) {
+        try {
+            byte[] bytes = Base64.getDecoder().decode(payload);
+            Encryption.EncryptedData data = new Encryption.EncryptedData();
+            data.iv         = Arrays.copyOfRange(bytes, 0, 12);
+            data.ciphertext = Arrays.copyOfRange(bytes, 12, bytes.length);
+            String decrypted = Encryption.decrypt(data, shared);
+            if (onMessageReceived != null) onMessageReceived.accept(decrypted);
+        } catch (Exception e) {
+            log.warning("Decryption failed: " + e.getMessage());
+        }
     }
 
     public void disconnect() {
