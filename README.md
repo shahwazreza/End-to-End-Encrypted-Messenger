@@ -25,9 +25,11 @@ This project demonstrates real E2EE fundamentals:
 ```
 e2ee-messenger/
 │
-├── Server.java
-├── Client.java
-├── Main.java
+├── ChatApp.java          ← JavaFX desktop UI
+├── MessengerClient.java  ← shared networking/crypto core
+├── Client.java           ← CLI client (uses MessengerClient)
+├── Server.java           ← relay server
+├── Main.java             ← crypto demo / smoke test
 ├── pom.xml
 │
 ├── crypto/
@@ -69,50 +71,49 @@ The server only forwards ciphertext and never has access to keys or plaintext.
 
 ### Requirements
 - Java 17+
+- [Maven 3.8+](https://maven.apache.org/download.cgi) (required for the JavaFX GUI)
 
-### Option 1 — Direct compile
+> Maven is only needed for the GUI. The CLI works with plain `javac`.
 
-```powershell
-javac *.java crypto/*.java
-```
+---
 
-### Option 2 — Maven
+### Desktop GUI (JavaFX)
 
-```powershell
-mvn compile
-```
-
-### Start the Server
+Maven downloads JavaFX automatically on first run.
 
 ```powershell
+# Start the server
 java Server
+
+# Launch the GUI (in a separate terminal)
+mvn javafx:run
 ```
 
-To use a custom port:
+Enter your username, peer's username, and click **Connect**. Both sides need to be connected for the key exchange to complete (30-second timeout).
+
+---
+
+### CLI (no Maven needed)
 
 ```powershell
-java -Dserver.port=6000 Server
-```
+# Compile
+javac *.java crypto/*.java
 
-### Start Clients (in separate terminals)
+# Start the server
+java Server
 
-Terminal 1:
-```powershell
+# Terminal 1
 java Client Alice Bob
-```
 
-Terminal 2:
-```powershell
+# Terminal 2
 java Client Bob Alice
 ```
 
-To connect to a remote server:
+To use a custom host or port:
 
 ```powershell
-java -Dserver.host=192.168.1.10 -Dserver.port=5000 Client Alice Bob
+java -Dserver.host=192.168.1.10 -Dserver.port=6000 Client Alice Bob
 ```
-
-Type messages in either terminal. Each client waits up to 30 seconds for the peer to connect.
 
 
 ## Security Properties
@@ -129,8 +130,8 @@ Type messages in either terminal. Each client waits up to 30 seconds for the pee
 
 ## Planned Improvements
 
+- Web frontend (React + WebCrypto API)
 - TLS transport layer (SSLServerSocket) to protect key exchange in transit
-- GUI chat interface
 - Persistent key storage
 - Group messaging
 - Message sequence numbers for replay protection
