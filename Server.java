@@ -1,62 +1,86 @@
 import java.io.*;
 import java.net.*;
 import java.util.concurrent.*;
+import java.util.logging.*;
 
 public class Server {
 
-    private static ConcurrentHashMap<String, Socket> clients = new ConcurrentHashMap<>();
+    private static final int PORT = Integer.parseInt(System.getProperty("server.port", "5000"));
+    private static final Logger log = Logger.getLogger(Server.class.getName());
 
-    public static void main(String[] args) throws Exception {
-        ServerSocket server = new ServerSocket(5000);
-        System.out.println("Server running...");
+    private static final ConcurrentHashMap<String, Socket> clients = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, PrintWriter> writers = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, String> publicKeys = new ConcurrentHashMap<>();
 
-        while (true) {
-            Socket socket = server.accept();
-            new Thread(() -> handleClient(socket)).start();
+    public static void main(String[] args) throws IOException {
+        ServerSocket serverSocket = new ServerSocket(PORT);
+        log.info("Server listening on port " + PORT);
+
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try { serverSocket.close(); } catch (IOException ignored) {}
+            log.info("Server stopped");
+        }));
+
+        while (!serverSocket.isClosed()) {
+            try {
+                Socket client = serverSocket.accept();
+                new Thread(() -> handleClient(client)).start();
+            } catch (SocketException e) {
+                if (!serverSocket.isClosed()) log.warning("Accept error: " + e.getMessage());
+            }
         }
     }
 
-    private static ConcurrentHashMap<String, String> publicKeys = new ConcurrentHashMap<>();
-
     private static void handleClient(Socket socket) {
+        String username = null;
         try {
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
 
-            String username = in.readLine();
+            username = in.readLine();
+            if (username == null || username.isBlank()) {
+                socket.close();
+                return;
+            }
+            username = username.trim();
+
             clients.put(username, socket);
-            System.out.println(username + " connected");
+            writers.put(username, out);
+            log.info(username + " connected from " + socket.getInetAddress());
 
             String line;
             while ((line = in.readLine()) != null) {
-
-                if (line.startsWith("REGISTER")) {
-                    String[] parts = line.split("\\|");
-                    publicKeys.put(parts[1], parts[2]);
-                    System.out.println(parts[1] + " registered key");
-                }
-
-                else if (line.startsWith("GETKEY")) {
-                    String user = line.split("\\|")[1];
-                    String key = publicKeys.get(user);
-                    out.println(key == null ? "null" : key);
-                }
-
-                else {
-                    // normal message forwarding
+                if (line.startsWith("REGISTER|")) {
+                    String[] parts = line.split("\\|", 3);
+                    if (parts.length == 3 && !parts[2].isBlank()) {
+                        publicKeys.put(parts[1].trim(), parts[2].trim());
+                        log.info(parts[1].trim() + " registered public key");
+                    }
+                } else if (line.startsWith("GETKEY|")) {
                     String[] parts = line.split("\\|", 2);
-                    String recipient = parts[0];
-                    String message = parts[1];
-
-                    Socket target = clients.get(recipient);
-                    if (target != null) {
-                        PrintWriter targetOut = new PrintWriter(target.getOutputStream(), true);
-                        targetOut.println(message);
+                    if (parts.length == 2) {
+                        String key = publicKeys.get(parts[1].trim());
+                        out.println(key != null ? key : "null");
+                    }
+                } else {
+                    String[] parts = line.split("\\|", 2);
+                    if (parts.length == 2) {
+                        PrintWriter recipientOut = writers.get(parts[0].trim());
+                        if (recipientOut != null) {
+                            recipientOut.println(parts[1]);
+                        }
                     }
                 }
             }
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (IOException e) {
+            log.warning("Client error (" + username + "): " + e.getMessage());
+        } finally {
+            if (username != null) {
+                clients.remove(username);
+                writers.remove(username);
+                log.info(username + " disconnected");
+            }
+            try { socket.close(); } catch (IOException ignored) {}
         }
     }
 }
