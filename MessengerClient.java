@@ -9,164 +9,196 @@ import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.PublicKey;
 import java.security.spec.X509EncodedKeySpec;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.logging.Logger;
 import javax.net.ssl.SSLSocketFactory;
 
 public class MessengerClient {
 
-    private static final long PEER_KEY_TIMEOUT_MS = 30_000;
     private static final Logger log = Logger.getLogger(MessengerClient.class.getName());
 
-    private final String username;
-    private final String peer;
-    private final String host;
-    private final int port;
+    private final String  username;
+    private final String  password;
+    private final String  host;
+    private final int     port;
     private final boolean useTls;
 
-    private Socket socket;
+    private Socket     socket;
     private PrintWriter out;
-    private SecretKey shared;
 
-    private Runnable onConnected;
-    private Consumer<String> onMessageReceived;
-    private Consumer<String> onError;
-    private Consumer<String> onStatus;
-    private Runnable onDisconnected;
+    private volatile String    peer;
+    private volatile SecretKey shared;
+    private volatile CompletableFuture<String> pendingKey;
 
-    public MessengerClient(String username, String peer, String host, int port) {
-        this(username, peer, host, port, false);
-    }
+    private Runnable               onAuthSuccess;
+    private Consumer<List<String>> onUsersUpdated;
+    private Consumer<String>       onUserJoined;
+    private Consumer<String>       onUserLeft;
+    private Runnable               onChatReady;
+    private Consumer<String>       onMessageReceived;
+    private Consumer<String>       onError;
+    private Consumer<String>       onStatus;
+    private Runnable               onDisconnected;
 
-    public MessengerClient(String username, String peer, String host, int port, boolean useTls) {
+    public MessengerClient(String username, String password, String host, int port, boolean useTls) {
         this.username = username;
-        this.peer = peer;
-        this.host = host;
-        this.port = port;
-        this.useTls = useTls;
+        this.password = password;
+        this.host     = host;
+        this.port     = port;
+        this.useTls   = useTls;
     }
 
-    public void setOnConnected(Runnable handler)             { this.onConnected = handler; }
-    public void setOnMessageReceived(Consumer<String> handler) { this.onMessageReceived = handler; }
-    public void setOnError(Consumer<String> handler)          { this.onError = handler; }
-    public void setOnStatus(Consumer<String> handler)         { this.onStatus = handler; }
-    public void setOnDisconnected(Runnable handler)           { this.onDisconnected = handler; }
-    public String getPeer() { return peer; }
+    public void setOnAuthSuccess(Runnable h)                { this.onAuthSuccess     = h; }
+    public void setOnUsersUpdated(Consumer<List<String>> h) { this.onUsersUpdated    = h; }
+    public void setOnUserJoined(Consumer<String> h)         { this.onUserJoined      = h; }
+    public void setOnUserLeft(Consumer<String> h)           { this.onUserLeft        = h; }
+    public void setOnChatReady(Runnable h)                  { this.onChatReady       = h; }
+    public void setOnMessageReceived(Consumer<String> h)    { this.onMessageReceived = h; }
+    public void setOnError(Consumer<String> h)              { this.onError           = h; }
+    public void setOnStatus(Consumer<String> h)             { this.onStatus          = h; }
+    public void setOnDisconnected(Runnable h)               { this.onDisconnected    = h; }
 
-    public void connectAsync() {
+    public String getUsername() { return username; }
+    public String getPeer()     { return peer; }
+
+    // ── Connect & authenticate ────────────────────────────────────────────────
+
+    public void connectAsync(boolean register) {
+        Thread t = new Thread(() -> {
+            try { connectAndAuth(register); }
+            catch (Exception e) { if (onError != null) onError.accept(userFriendlyError(e)); }
+        });
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void connectAndAuth(boolean register) throws Exception {
+        fireStatus("Connecting" + (useTls ? " with TLS..." : "..."));
+        socket = createSocket();
+        BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+        out = new PrintWriter(socket.getOutputStream(), true);
+
+        String hello = in.readLine();
+        if (!"OK|CONNECTED".equals(hello)) throw new IOException("Unexpected server greeting");
+
+        out.println((register ? "REGISTER_ACCOUNT" : "LOGIN") + "|" + username + "|" + password);
+
+        String resp = in.readLine();
+        if (resp == null) throw new EOFException("Server closed during auth");
+        if (resp.startsWith("ERROR|")) throw new IOException(resp.substring(6));
+        if (!"OK|AUTH".equals(resp)) throw new IOException("Unexpected auth response");
+
+        fireStatus(register ? "Account created — welcome, " + username : "Signed in as " + username);
+        if (onAuthSuccess != null) onAuthSuccess.run();
+
+        // ── Read loop ─────────────────────────────────────────────────────────
+        String msg;
+        while ((msg = in.readLine()) != null) {
+            if (msg.startsWith("USERS|")) {
+                String body = msg.substring(6);
+                List<String> users = body.isEmpty()
+                        ? new ArrayList<>()
+                        : new ArrayList<>(Arrays.asList(body.split(",")));
+                users.remove(username);
+                if (onUsersUpdated != null) onUsersUpdated.accept(users);
+
+            } else if (msg.startsWith("USER_JOINED|")) {
+                String who = msg.substring(12);
+                if (!who.equals(username) && onUserJoined != null) onUserJoined.accept(who);
+
+            } else if (msg.startsWith("USER_LEFT|")) {
+                if (onUserLeft != null) onUserLeft.accept(msg.substring(10));
+
+            } else if (msg.startsWith("KEY|")) {
+                CompletableFuture<String> f = pendingKey;
+                if (f != null) f.complete(msg.substring(4));
+
+            } else if (msg.startsWith("MSG|")) {
+                String[] parts = msg.split("\\|", 3);
+                if (parts.length == 3 && parts[1].equals(peer) && shared != null) {
+                    handleEncryptedMessage(parts[2]);
+                }
+
+            } else if (msg.startsWith("ERROR|")) {
+                fireStatus(msg.substring(6));
+            }
+        }
+
+        fireStatus("Disconnected");
+        if (onDisconnected != null) onDisconnected.run();
+    }
+
+    // ── Key exchange & chat ───────────────────────────────────────────────────
+
+    public void startChatWith(String targetPeer) {
+        this.peer   = targetPeer;
+        this.shared = null;
+
         Thread t = new Thread(() -> {
             try {
-                connect();
+                boolean fresh = !KeyManager.hasStoredIdentity(username);
+                KeyPair myKeys = KeyManager.loadOrCreate(username);
+                fireStatus(fresh ? "Generated new identity" : "Loaded existing identity");
+
+                out.println("PUBKEY|" + Base64.getEncoder().encodeToString(myKeys.getPublic().getEncoded()));
+
+                fireStatus("Waiting for " + targetPeer + "...");
+                long   deadline   = System.currentTimeMillis() + 30_000;
+                String peerKeyB64 = null;
+
+                while (true) {
+                    if (System.currentTimeMillis() > deadline)
+                        throw new Exception("Timed out waiting for " + targetPeer);
+                    pendingKey = new CompletableFuture<>();
+                    out.println("GETKEY|" + targetPeer);
+                    try { peerKeyB64 = pendingKey.get(2, TimeUnit.SECONDS); }
+                    catch (Exception ignored) {}
+                    if (peerKeyB64 != null && !"null".equals(peerKeyB64)) break;
+                    Thread.sleep(500);
+                }
+                pendingKey = null;
+
+                PublicKey peerPub = KeyFactory.getInstance("X25519")
+                        .generatePublic(new X509EncodedKeySpec(Base64.getDecoder().decode(peerKeyB64)));
+                shared = KeyDerivation.deriveSharedKey(myKeys.getPrivate(), peerPub);
+
+                fireStatus("Secure channel established with " + targetPeer);
+                if (onChatReady != null) onChatReady.run();
             } catch (Exception e) {
-                if (onError != null) onError.accept(userFriendlyError(e));
+                if (onError != null) onError.accept(e.getMessage());
             }
         });
         t.setDaemon(true);
         t.start();
     }
 
-    private void connect() throws Exception {
-        fireStatus("Connecting to " + host + ":" + port + (useTls ? " with TLS..." : "..."));
-        socket = createSocket();
-        BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-        out = new PrintWriter(socket.getOutputStream(), true);
-
-        out.println(username);
-        String hello = in.readLine();
-        if (hello == null) throw new EOFException("Server closed the connection");
-        if (hello.startsWith("ERROR|")) throw new IOException(hello.substring(6));
-        if (!hello.equals("OK|CONNECTED")) throw new IOException("Unexpected server handshake response");
-
-        boolean freshIdentity = !KeyManager.hasStoredIdentity(username);
-        KeyPair myKeys = KeyManager.loadOrCreate(username);
-        fireStatus(freshIdentity ? "Generated new identity for " + username : "Loaded existing identity for " + username);
-        out.println("REGISTER|" + username + "|" +
-                Base64.getEncoder().encodeToString(myKeys.getPublic().getEncoded()));
-
-        String peerKeyB64 = null;
-        List<String> pendingMessages = new ArrayList<>();
-        long deadline = System.currentTimeMillis() + PEER_KEY_TIMEOUT_MS;
-        fireStatus("Waiting for " + peer + " to connect...");
-        while (peerKeyB64 == null || peerKeyB64.equals("null")) {
-            if (System.currentTimeMillis() >= deadline)
-                throw new Exception("Timed out waiting for '" + peer + "' to connect");
-            out.println("GETKEY|" + peer);
-            String response = in.readLine();
-            if (response == null) throw new EOFException("Disconnected while waiting for peer key");
-            if (response.startsWith("MSG|")) {
-                String[] parts = response.split("\\|", 3);
-                if (parts.length == 3 && parts[1].equals(peer)) {
-                    pendingMessages.add(parts[2]);
-                }
-                continue;
-            }
-            if (response.startsWith("ERROR|")) {
-                fireStatus(response.substring(6));
-                continue;
-            }
-            if (!response.startsWith("KEY|")) {
-                fireStatus("Ignored unexpected server response");
-                continue;
-            }
-            peerKeyB64 = response.substring(4);
-            if ("null".equals(peerKeyB64)) {
-                Thread.sleep(500);
-                peerKeyB64 = null;
-            }
-        }
-
-        PublicKey peerPublic = KeyFactory.getInstance("X25519")
-                .generatePublic(new X509EncodedKeySpec(Base64.getDecoder().decode(peerKeyB64)));
-        shared = KeyDerivation.deriveSharedKey(myKeys.getPrivate(), peerPublic);
-
-        fireStatus("Secure channel established with " + peer);
-        if (onConnected != null) onConnected.run();
-        for (String pendingMessage : pendingMessages) {
-            handleEncryptedMessage(pendingMessage);
-        }
-
-        String msg;
-        while ((msg = in.readLine()) != null) {
-            if (msg.startsWith("MSG|")) {
-                String[] parts = msg.split("\\|", 3);
-                if (parts.length == 3 && parts[1].equals(peer)) {
-                    handleEncryptedMessage(parts[2]);
-                }
-            } else if (msg.startsWith("ERROR|")) {
-                fireStatus(msg.substring(6));
-            } else {
-                fireStatus("Ignored unexpected server response");
-            }
-        }
-
-        fireStatus("Disconnected from server");
-        if (onDisconnected != null) onDisconnected.run();
+    public void leaveChat() {
+        this.peer   = null;
+        this.shared = null;
     }
+
+    // ── Send ─────────────────────────────────────────────────────────────────
 
     public void sendMessage(String text) throws Exception {
         if (out == null || shared == null) throw new IllegalStateException("Not connected");
         Encryption.EncryptedData enc = Encryption.encrypt(text, shared);
         byte[] combined = new byte[enc.iv.length + enc.ciphertext.length];
-        System.arraycopy(enc.iv,         0, combined, 0,              enc.iv.length);
-        System.arraycopy(enc.ciphertext, 0, combined, enc.iv.length,  enc.ciphertext.length);
+        System.arraycopy(enc.iv,         0, combined, 0,             enc.iv.length);
+        System.arraycopy(enc.ciphertext, 0, combined, enc.iv.length, enc.ciphertext.length);
         out.println(peer + "|" + Base64.getEncoder().encodeToString(combined));
-        if (out.checkError()) {
-            throw new IOException("Failed to send message to server");
-        }
+        if (out.checkError()) throw new IOException("Failed to send message");
         MessageHistory.append(username, peer, true, text);
     }
+
+    // ── Receive ──────────────────────────────────────────────────────────────
 
     private void handleEncryptedMessage(String payload) {
         try {
             byte[] bytes = Base64.getDecoder().decode(payload);
-            if (bytes.length <= 12) {
-                fireStatus("Received malformed encrypted message");
-                return;
-            }
+            if (bytes.length <= 12) { fireStatus("Malformed message received"); return; }
             Encryption.EncryptedData data = new Encryption.EncryptedData();
             data.iv         = Arrays.copyOfRange(bytes, 0, 12);
             data.ciphertext = Arrays.copyOfRange(bytes, 12, bytes.length);
@@ -179,27 +211,28 @@ public class MessengerClient {
         }
     }
 
-    private void fireStatus(String message) {
-        if (onStatus != null) onStatus.accept(message);
-    }
-
-    private String userFriendlyError(Exception e) {
-        String message = e.getMessage();
-        if (message != null && message.contains("Unsupported or unrecognized SSL message")) {
-            return "TLS is enabled, but the server on " + host + ":" + port
-                    + " is not using TLS. Stop the plain server and start the TLS server.";
-        }
-        return message != null ? message : e.getClass().getSimpleName();
-    }
-
-    private Socket createSocket() throws IOException {
-        if (!useTls) {
-            return new Socket(host, port);
-        }
-        return SSLSocketFactory.getDefault().createSocket(host, port);
-    }
+    // ── Disconnect ───────────────────────────────────────────────────────────
 
     public void disconnect() {
         try { if (socket != null) socket.close(); } catch (IOException ignored) {}
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private void fireStatus(String msg) {
+        if (onStatus != null) onStatus.accept(msg);
+    }
+
+    private String userFriendlyError(Exception e) {
+        String m = e.getMessage();
+        if (m != null && m.contains("Unsupported or unrecognized SSL message"))
+            return "TLS mismatch: server is not using TLS.";
+        return m != null ? m : e.getClass().getSimpleName();
+    }
+
+    private Socket createSocket() throws IOException {
+        return useTls
+                ? SSLSocketFactory.getDefault().createSocket(host, port)
+                : new Socket(host, port);
     }
 }
