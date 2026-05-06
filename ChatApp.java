@@ -227,6 +227,16 @@ public class ChatApp extends Application {
         // Auto-scroll to newest message
         messagesBox.heightProperty().addListener((obs, o, n) -> scroll.setVvalue(1.0));
 
+        List<MessageHistory.Entry> history = MessageHistory.load(username, peer);
+        if (!history.isEmpty()) {
+            messagesBox.getChildren().add(systemMessage("── Previous messages ──"));
+            for (MessageHistory.Entry entry : history) {
+                messagesBox.getChildren().add(bubble(
+                        entry.formattedTime() + "  " + entry.text(), entry.sent()));
+            }
+            messagesBox.getChildren().add(systemMessage("── Now ──"));
+        }
+
         messagesBox.getChildren().add(systemMessage("Secure channel established. Messages are end-to-end encrypted."));
 
         // Input bar

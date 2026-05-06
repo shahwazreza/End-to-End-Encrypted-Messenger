@@ -157,6 +157,7 @@ public class MessengerClient {
         if (out.checkError()) {
             throw new IOException("Failed to send message to server");
         }
+        MessageHistory.append(username, peer, true, text);
     }
 
     private void handleEncryptedMessage(String payload) {
@@ -170,6 +171,7 @@ public class MessengerClient {
             data.iv         = Arrays.copyOfRange(bytes, 0, 12);
             data.ciphertext = Arrays.copyOfRange(bytes, 12, bytes.length);
             String decrypted = Encryption.decrypt(data, shared);
+            MessageHistory.append(username, peer, false, decrypted);
             if (onMessageReceived != null) onMessageReceived.accept(decrypted);
         } catch (Exception e) {
             fireStatus("Could not decrypt a message from " + peer);
