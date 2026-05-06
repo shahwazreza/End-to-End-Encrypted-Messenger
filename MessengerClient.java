@@ -81,7 +81,9 @@ public class MessengerClient {
         if (hello.startsWith("ERROR|")) throw new IOException(hello.substring(6));
         if (!hello.equals("OK|CONNECTED")) throw new IOException("Unexpected server handshake response");
 
-        KeyPair myKeys = KeyManager.generateKeyPair();
+        boolean freshIdentity = !KeyManager.hasStoredIdentity(username);
+        KeyPair myKeys = KeyManager.loadOrCreate(username);
+        fireStatus(freshIdentity ? "Generated new identity for " + username : "Loaded existing identity for " + username);
         out.println("REGISTER|" + username + "|" +
                 Base64.getEncoder().encodeToString(myKeys.getPublic().getEncoded()));
 
