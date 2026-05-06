@@ -50,6 +50,24 @@ public class MessageHistory {
         }
     }
 
+    public static List<String> peers(String username) {
+        Path dir = Paths.get(System.getProperty("user.home"), ".messenger", username, "history");
+        if (!Files.isDirectory(dir)) return List.of();
+        try {
+            List<String> peers = new ArrayList<>();
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, "*.log")) {
+                for (Path file : stream) {
+                    String name = file.getFileName().toString();
+                    peers.add(name.substring(0, name.length() - 4));
+                }
+            }
+            peers.sort(String::compareTo);
+            return peers;
+        } catch (IOException e) {
+            return List.of();
+        }
+    }
+
     private static Path historyFile(String username, String peer) {
         return Paths.get(System.getProperty("user.home"), ".messenger",
                 username, "history", peer.toLowerCase() + ".log");
