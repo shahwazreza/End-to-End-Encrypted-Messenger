@@ -9,6 +9,15 @@ import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.stage.Stage;
+import java.io.File;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.List;
 
 public class ChatApp extends Application {
 
@@ -24,6 +33,7 @@ public class ChatApp extends Application {
     private static final String MUTED   = "#6c7086";
 
     private Stage primaryStage;
+    private Process localServerProcess;
 
     @Override
     public void start(Stage stage) {
@@ -65,6 +75,11 @@ public class ChatApp extends Application {
         tlsCheck.setFont(Font.font(12));
         tlsCheck.setMaxWidth(Double.MAX_VALUE);
 
+        Button tlsSetupBtn = new Button("Start local TLS server");
+        tlsSetupBtn.setMaxWidth(Double.MAX_VALUE);
+        tlsSetupBtn.setFont(Font.font("System", FontWeight.BOLD, 12));
+        tlsSetupBtn.setStyle(secondaryBtnStyle());
+
         Button connectBtn = new Button("Connect");
         connectBtn.setMaxWidth(Double.MAX_VALUE);
         connectBtn.setFont(Font.font("System", FontWeight.BOLD, 14));
@@ -99,6 +114,16 @@ public class ChatApp extends Application {
             connectBtn.setDisable(true);
             status(statusLabel, "Connecting to server...", SUBTEXT);
 
+            if (tlsCheck.isSelected()) {
+                try {
+                    configureLocalTrustStore();
+                } catch (IOException ex) {
+                    status(statusLabel, ex.getMessage(), RED);
+                    connectBtn.setDisable(false);
+                    return;
+                }
+            }
+
             MessengerClient client = new MessengerClient(username, peer, host, port, tlsCheck.isSelected());
             client.setOnStatus(message ->
                 Platform.runLater(() -> status(statusLabel, message, SUBTEXT)));
@@ -115,14 +140,46 @@ public class ChatApp extends Application {
 
         });
 
+        tlsSetupBtn.setOnAction(e -> {
+            tlsSetupBtn.setDisable(true);
+            status(statusLabel, "Starting local TLS server...", SUBTEXT);
+            int serverPort;
+            try {
+                serverPort = portField.getText().trim().isEmpty() ? 5000 : Integer.parseInt(portField.getText().trim());
+            } catch (NumberFormatException ex) {
+                status(statusLabel, "Invalid port number", RED);
+                tlsSetupBtn.setDisable(false);
+                return;
+            }
+            new Thread(() -> {
+                try {
+                    if (isPortOpen("localhost", serverPort)) {
+                        throw new IOException("Port " + serverPort + " is already in use. Stop the old server first.");
+                    }
+                    TlsConfig tlsConfig = setupLocalTls();
+                    startLocalTlsServer(tlsConfig, serverPort);
+                    Platform.runLater(() -> {
+                        tlsCheck.setSelected(true);
+                        status(statusLabel, "Local TLS server running on port " + serverPort, GREEN);
+                        tlsSetupBtn.setDisable(false);
+                    });
+                } catch (Exception ex) {
+                    Platform.runLater(() -> {
+                        status(statusLabel, "TLS setup failed: " + ex.getMessage(), RED);
+                        tlsSetupBtn.setDisable(false);
+                    });
+                }
+            }).start();
+        });
+
         // Allow pressing Enter in the last field to trigger connect
         portField.setOnAction(e -> connectBtn.fire());
 
         root.getChildren().addAll(icon, title, subtitle,
                 usernameField, peerField, hostField, portField,
-                tlsCheck, connectBtn, statusLabel);
+                tlsCheck, tlsSetupBtn, connectBtn, statusLabel);
 
-        primaryStage.setScene(new Scene(root, 420, 510));
+        primaryStage.setScene(new Scene(root, 420, 560));
     }
 
     // ─── Chat screen ─────────────────────────────────────────────────────────
@@ -293,9 +350,173 @@ public class ChatApp extends Application {
                "-fx-background-radius: 8; -fx-padding: 10 20; -fx-cursor: hand;";
     }
 
+    private String secondaryBtnStyle() {
+        return "-fx-background-color: " + SURFACE + "; -fx-text-fill: " + TEXT + ";" +
+               "-fx-background-radius: 8; -fx-padding: 9 18; -fx-cursor: hand;";
+    }
+
     private void status(Label label, String text, String color) {
         label.setText(text);
         label.setTextFill(Color.web(color));
+    }
+
+    private TlsConfig setupLocalTls() throws Exception {
+        Path cwd = Paths.get("").toAbsolutePath().normalize();
+        Path keyStore = cwd.resolve("server-keystore.p12");
+        Path cert = cwd.resolve("server-cert.pem");
+        Path trustStore = cwd.resolve("client-truststore.p12");
+        Path keytool = findKeytool();
+
+        Files.deleteIfExists(keyStore);
+        Files.deleteIfExists(cert);
+        Files.deleteIfExists(trustStore);
+
+        runKeytool(keytool, List.of(
+                "-genkeypair",
+                "-alias", "messenger-server",
+                "-keyalg", "RSA",
+                "-keysize", "2048",
+                "-keystore", keyStore.toString(),
+                "-storetype", "PKCS12",
+                "-storepass", "changeit",
+                "-keypass", "changeit",
+                "-validity", "365",
+                "-dname", "CN=localhost",
+                "-ext", "SAN=DNS:localhost,IP:127.0.0.1"
+        ));
+        runKeytool(keytool, List.of(
+                "-exportcert",
+                "-alias", "messenger-server",
+                "-keystore", keyStore.toString(),
+                "-storepass", "changeit",
+                "-rfc",
+                "-file", cert.toString()
+        ));
+        runKeytool(keytool, List.of(
+                "-importcert",
+                "-alias", "messenger-server",
+                "-file", cert.toString(),
+                "-keystore", trustStore.toString(),
+                "-storetype", "PKCS12",
+                "-storepass", "changeit",
+                "-noprompt"
+        ));
+
+        System.setProperty("javax.net.ssl.trustStore", trustStore.toString());
+        System.setProperty("javax.net.ssl.trustStorePassword", "changeit");
+
+        return new TlsConfig(cwd, keyStore, trustStore);
+    }
+
+    private void startLocalTlsServer(TlsConfig tlsConfig, int port) throws Exception {
+        if (localServerProcess != null && localServerProcess.isAlive()) {
+            return;
+        }
+
+        Path logFile = tlsConfig.cwd.resolve("tls-server.log");
+        ProcessBuilder builder = new ProcessBuilder(
+                findJava().toString(),
+                "-Dserver.tls=true",
+                "-Dserver.port=" + port,
+                "-Djavax.net.ssl.keyStore=" + tlsConfig.keyStore,
+                "-Djavax.net.ssl.keyStorePassword=changeit",
+                "-cp", serverClassPath(tlsConfig.cwd),
+                "Server"
+        );
+        builder.directory(tlsConfig.cwd.toFile());
+        builder.redirectErrorStream(true);
+        builder.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile.toFile()));
+
+        localServerProcess = builder.start();
+        Thread.sleep(900);
+        if (!localServerProcess.isAlive()) {
+            String output = Files.isRegularFile(logFile)
+                    ? Files.readString(logFile, StandardCharsets.UTF_8).trim()
+                    : "";
+            throw new IOException(output.isBlank() ? "Local TLS server exited during startup" : output);
+        }
+    }
+
+    private void configureLocalTrustStore() throws IOException {
+        if (System.getProperty("javax.net.ssl.trustStore") != null) {
+            return;
+        }
+
+        Path trustStore = Paths.get("").toAbsolutePath().normalize().resolve("client-truststore.p12");
+        if (!Files.isRegularFile(trustStore)) {
+            throw new IOException("Click Set up local TLS before connecting with TLS");
+        }
+
+        System.setProperty("javax.net.ssl.trustStore", trustStore.toString());
+        System.setProperty("javax.net.ssl.trustStorePassword", "changeit");
+    }
+
+    private boolean isPortOpen(String host, int port) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), 250);
+            return true;
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
+    private Path findJava() {
+        String executable = System.getProperty("os.name", "").toLowerCase().contains("win")
+                ? "java.exe"
+                : "java";
+        return Paths.get(System.getProperty("java.home")).resolve("bin").resolve(executable);
+    }
+
+    private String serverClassPath(Path cwd) {
+        String currentClassPath = System.getProperty("java.class.path");
+        return cwd
+                + File.pathSeparator + cwd.resolve("target").resolve("classes")
+                + File.pathSeparator + currentClassPath;
+    }
+
+    private Path findKeytool() throws IOException {
+        String executable = System.getProperty("os.name", "").toLowerCase().contains("win")
+                ? "keytool.exe"
+                : "keytool";
+        Path javaHome = Paths.get(System.getProperty("java.home"));
+        Path keytool = javaHome.resolve("bin").resolve(executable);
+        if (Files.isRegularFile(keytool)) {
+            return keytool;
+        }
+        Path parent = javaHome.getParent();
+        if (parent != null) {
+            keytool = parent.resolve("bin").resolve(executable);
+            if (Files.isRegularFile(keytool)) {
+                return keytool;
+            }
+        }
+        throw new IOException("Could not find keytool in the current JDK");
+    }
+
+    private void runKeytool(Path keytool, List<String> args) throws Exception {
+        ProcessBuilder builder = new ProcessBuilder();
+        builder.command().add(keytool.toString());
+        builder.command().addAll(args);
+        builder.redirectErrorStream(true);
+
+        Process process = builder.start();
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        int exitCode = process.waitFor();
+        if (exitCode != 0) {
+            throw new IOException(output.isBlank() ? "keytool exited with code " + exitCode : output.trim());
+        }
+    }
+
+    private static class TlsConfig {
+        private final Path cwd;
+        private final Path keyStore;
+        private final Path trustStore;
+
+        private TlsConfig(Path cwd, Path keyStore, Path trustStore) {
+            this.cwd = cwd;
+            this.keyStore = keyStore;
+            this.trustStore = trustStore;
+        }
     }
 
     public static void main(String[] args) {

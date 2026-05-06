@@ -119,6 +119,10 @@ java -Dserver.host=192.168.1.10 -Dserver.port=6000 Client Alice Bob
 
 TLS is optional and uses the standard JVM keystore and truststore settings.
 
+In the JavaFX app, click **Start local TLS server** on the login screen. The app creates `server-keystore.p12`, `server-cert.pem`, and `client-truststore.p12`, starts the TLS server in the background, and enables the TLS checkbox.
+
+Connect both GUI clients with **Use TLS** selected. If the app says the port is already in use, stop any old `java Server` terminal first.
+
 Create a local demo certificate:
 
 ```powershell
@@ -136,18 +140,19 @@ keytool -importcert -alias messenger-server -file server-cert.pem `
 Run the TLS server:
 
 ```powershell
-java -Dserver.tls=true `
-  -Djavax.net.ssl.keyStore=server-keystore.p12 `
-  -Djavax.net.ssl.keyStorePassword=changeit `
+java "-Dserver.tls=true" `
+  -cp "C:\Users\PC_World\Desktop\End-to-End-Encrypted-Messenger;C:\Users\PC_World\Desktop\End-to-End-Encrypted-Messenger\target\classes" `
+  "-Djavax.net.ssl.keyStore=server-keystore.p12" `
+  "-Djavax.net.ssl.keyStorePassword=changeit" `
   Server
 ```
 
 Run TLS clients:
 
 ```powershell
-java -Dclient.tls=true `
-  -Djavax.net.ssl.trustStore=client-truststore.p12 `
-  -Djavax.net.ssl.trustStorePassword=changeit `
+java "-Dclient.tls=true" `
+  "-Djavax.net.ssl.trustStore=client-truststore.p12" `
+  "-Djavax.net.ssl.trustStorePassword=changeit" `
   Client Alice Bob
 ```
 

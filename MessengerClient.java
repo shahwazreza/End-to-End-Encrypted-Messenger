@@ -62,7 +62,7 @@ public class MessengerClient {
             try {
                 connect();
             } catch (Exception e) {
-                if (onError != null) onError.accept(e.getMessage());
+                if (onError != null) onError.accept(userFriendlyError(e));
             }
         });
         t.setDaemon(true);
@@ -177,6 +177,15 @@ public class MessengerClient {
 
     private void fireStatus(String message) {
         if (onStatus != null) onStatus.accept(message);
+    }
+
+    private String userFriendlyError(Exception e) {
+        String message = e.getMessage();
+        if (message != null && message.contains("Unsupported or unrecognized SSL message")) {
+            return "TLS is enabled, but the server on " + host + ":" + port
+                    + " is not using TLS. Stop the plain server and start the TLS server.";
+        }
+        return message != null ? message : e.getClass().getSimpleName();
     }
 
     private Socket createSocket() throws IOException {
