@@ -13,6 +13,7 @@ public class Server {
 
     private static final ConcurrentHashMap<String, PrintWriter> online     = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, String>      publicKeys = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, ConcurrentLinkedQueue<String>> offlineMessages = new ConcurrentHashMap<>();
 
     public static void main(String[] args) throws IOException {
         ServerSocket server = createServerSocket();
@@ -76,6 +77,7 @@ public class Server {
             online.put(username, out);
             out.println("OK|AUTH");
             out.println("USERS|" + onlineList(username));
+            out.println("KNOWN_USERS|" + knownUsers(username));
             broadcast("USER_JOINED|" + username, username);
             log.info(username + " joined  (online: " + online.size() + ")");
 
@@ -84,14 +86,18 @@ public class Server {
             while ((line = in.readLine()) != null) {
                 if (line.startsWith("PUBKEY|")) {
                     publicKeys.put(username, line.substring(7));
+                    deliverQueuedMessages(username, out);
 
                 } else if (line.startsWith("GETKEY|")) {
                     String peer = line.substring(7).trim().toLowerCase();
                     String key  = publicKeys.get(peer);
-                    out.println("KEY|" + (key != null ? key : "null"));
+                    out.println("KEY|" + peer + "|" + (key != null ? key : "null"));
 
                 } else if (line.equals("USERS")) {
                     out.println("USERS|" + onlineList(username));
+
+                } else if (line.equals("KNOWN_USERS")) {
+                    out.println("KNOWN_USERS|" + knownUsers(username));
 
                 } else {
                     int sep = line.indexOf('|');
@@ -99,10 +105,15 @@ public class Server {
                         String      target  = line.substring(0, sep).trim().toLowerCase();
                         String      payload = line.substring(sep + 1);
                         PrintWriter dest    = online.get(target);
+                        String senderKey = publicKeys.getOrDefault(username, "null");
+                        String relay = "MSG|" + username + "|" + senderKey + "|" + payload;
                         if (dest != null) {
-                            dest.println("MSG|" + username + "|" + payload);
+                            dest.println(relay);
                         } else {
-                            out.println("ERROR|" + target + " is not online");
+                            offlineMessages
+                                    .computeIfAbsent(target, ignored -> new ConcurrentLinkedQueue<>())
+                                    .add(relay);
+                            out.println("QUEUED|" + target);
                         }
                     }
                 }
@@ -113,7 +124,6 @@ public class Server {
         } finally {
             if (username != null) {
                 online.remove(username);
-                publicKeys.remove(username);
                 broadcast("USER_LEFT|" + username, null);
                 log.info(username + " left  (online: " + online.size() + ")");
             }
@@ -126,6 +136,22 @@ public class Server {
                 .filter(u -> !u.equals(exclude))
                 .sorted()
                 .collect(Collectors.joining(","));
+    }
+
+    private static String knownUsers(String exclude) {
+        return publicKeys.keySet().stream()
+                .filter(u -> !u.equals(exclude))
+                .sorted()
+                .collect(Collectors.joining(","));
+    }
+
+    private static void deliverQueuedMessages(String username, PrintWriter out) {
+        ConcurrentLinkedQueue<String> queue = offlineMessages.remove(username);
+        if (queue == null) return;
+        String message;
+        while ((message = queue.poll()) != null) {
+            out.println(message);
+        }
     }
 
     private static void broadcast(String message, String exclude) {

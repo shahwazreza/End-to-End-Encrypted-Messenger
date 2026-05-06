@@ -20,7 +20,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class ChatApp extends Application {
 
@@ -239,10 +241,13 @@ public class ChatApp extends Application {
 
         // Search bar
         TextField searchField = new TextField();
-        searchField.setPromptText("Search users...");
+        searchField.setPromptText("Search or type a username...");
         searchField.setStyle("-fx-background-color: " + SURFACE + "; -fx-text-fill: " + TEXT + ";" +
                 "-fx-prompt-text-fill: " + MUTED + "; -fx-background-radius: 20; -fx-padding: 9 14;");
-        HBox searchRow = new HBox(searchField);
+        Button openChatBtn = new Button("Open");
+        openChatBtn.setStyle(primaryBtnStyle() + "-fx-padding: 8 14; -fx-background-radius: 18;");
+        openChatBtn.setFont(Font.font(12));
+        HBox searchRow = new HBox(8, searchField, openChatBtn);
         searchRow.setPadding(new Insets(12, 16, 4, 16));
         HBox.setHgrow(searchField, Priority.ALWAYS);
 
@@ -255,14 +260,19 @@ public class ChatApp extends Application {
         ObservableList<String> allUsers      = FXCollections.observableArrayList();
         FilteredList<String>   filteredUsers = new FilteredList<>(allUsers, s -> true);
         ListView<String>       userList      = new ListView<>(filteredUsers);
+        Map<String, Integer> unread = new HashMap<>();
+        for (String historyPeer : MessageHistory.peers(client.getUsername())) {
+            if (!allUsers.contains(historyPeer)) allUsers.add(historyPeer);
+        }
         userList.setStyle("-fx-background-color: " + BG + "; -fx-border-color: transparent;");
         VBox.setVgrow(userList, Priority.ALWAYS);
 
         userList.setCellFactory(lv -> new ListCell<>() {
             private final Label  nameLabel = new Label();
+            private final Label  unreadLabel = new Label();
             private final Button chatBtn   = new Button("Chat");
             private final Region cellSpacer = new Region();
-            private final HBox   row       = new HBox(10, nameLabel, cellSpacer, chatBtn);
+            private final HBox   row       = new HBox(10, nameLabel, unreadLabel, cellSpacer, chatBtn);
 
             {
                 HBox.setHgrow(cellSpacer, Priority.ALWAYS);
@@ -270,12 +280,16 @@ public class ChatApp extends Application {
                 nameLabel.setTextFill(Color.web(TEXT));
                 chatBtn.setStyle(primaryBtnStyle() + "-fx-padding: 5 14; -fx-background-radius: 12;");
                 chatBtn.setFont(Font.font(12));
+                unreadLabel.setFont(Font.font("System", FontWeight.BOLD, 11));
+                unreadLabel.setTextFill(Color.web("#1e1e2e"));
+                unreadLabel.setStyle("-fx-background-color: " + GREEN + "; -fx-background-radius: 10; -fx-padding: 2 7;");
                 row.setAlignment(Pos.CENTER_LEFT);
                 row.setPadding(new Insets(8, 16, 8, 16));
                 setStyle("-fx-background-color: transparent; -fx-padding: 0;");
                 chatBtn.setOnAction(e -> {
                     String peer = getItem();
                     if (peer != null) {
+                        unread.remove(peer);
                         showChatScreen(client, peer);
                         client.startChatWith(peer);
                     }
@@ -286,7 +300,14 @@ public class ChatApp extends Application {
             protected void updateItem(String item, boolean empty) {
                 super.updateItem(item, empty);
                 if (empty || item == null) { setGraphic(null); }
-                else { nameLabel.setText(item); setGraphic(row); }
+                else {
+                    nameLabel.setText(item);
+                    int count = unread.getOrDefault(item, 0);
+                    unreadLabel.setText(String.valueOf(count));
+                    unreadLabel.setVisible(count > 0);
+                    unreadLabel.setManaged(count > 0);
+                    setGraphic(row);
+                }
             }
         });
 
@@ -297,7 +318,10 @@ public class ChatApp extends Application {
 
         // Wire up live updates
         client.setOnUsersUpdated(users -> Platform.runLater(() -> {
-            allUsers.setAll(users);
+            for (String user : users) {
+                if (!allUsers.contains(user)) allUsers.add(user);
+            }
+            FXCollections.sort(allUsers);
             updateOnlineStatus(statusLabel, users.size());
         }));
         client.setOnUserJoined(user -> Platform.runLater(() -> {
@@ -305,9 +329,20 @@ public class ChatApp extends Application {
             updateOnlineStatus(statusLabel, allUsers.size());
         }));
         client.setOnUserLeft(user -> Platform.runLater(() -> {
-            allUsers.remove(user);
+            if (!MessageHistory.peers(client.getUsername()).contains(user)) allUsers.remove(user);
             updateOnlineStatus(statusLabel, allUsers.size());
         }));
+        client.setOnNotification(sender -> Platform.runLater(() -> {
+            unread.merge(sender, 1, Integer::sum);
+            if (!allUsers.contains(sender)) {
+                allUsers.add(sender);
+                FXCollections.sort(allUsers);
+            }
+            status(statusLabel, "New message from " + sender, GREEN);
+            userList.refresh();
+        }));
+        client.setOnMessageQueued(target -> Platform.runLater(() ->
+                status(statusLabel, "Message queued for " + target, GREEN)));
         client.setOnDisconnected(() -> Platform.runLater(() ->
                 status(statusLabel, "Disconnected from server", RED)));
         client.setOnError(err -> Platform.runLater(() -> status(statusLabel, err, RED)));
@@ -320,6 +355,17 @@ public class ChatApp extends Application {
         searchField.textProperty().addListener((obs, old, val) -> {
             String filter = val.toLowerCase().trim();
             filteredUsers.setPredicate(u -> filter.isEmpty() || u.toLowerCase().contains(filter));
+        });
+        openChatBtn.setOnAction(e -> {
+            String target = searchField.getText().trim().toLowerCase();
+            if (target.isEmpty() || target.equals(client.getUsername())) return;
+            unread.remove(target);
+            if (!allUsers.contains(target)) {
+                allUsers.add(target);
+                FXCollections.sort(allUsers);
+            }
+            showChatScreen(client, target);
+            client.startChatWith(target);
         });
 
         signOutBtn.setOnAction(e -> {
@@ -343,7 +389,7 @@ public class ChatApp extends Application {
     }
 
     private void updateOnlineStatus(Label label, int count) {
-        String text  = count == 0 ? "No other users online" : count + " user" + (count == 1 ? "" : "s") + " online";
+        String text  = count == 0 ? "No contacts yet" : count + " contact" + (count == 1 ? "" : "s");
         String color = count == 0 ? MUTED : GREEN;
         label.setText(text);
         label.setTextFill(Color.web(color));
@@ -452,6 +498,10 @@ public class ChatApp extends Application {
 
         client.setOnMessageReceived(msg ->
                 Platform.runLater(() -> messagesBox.getChildren().add(bubble(msg, false))));
+        client.setOnNotification(sender -> Platform.runLater(() ->
+                messagesBox.getChildren().add(systemMessage("New message from " + sender, GREEN))));
+        client.setOnMessageQueued(target -> Platform.runLater(() ->
+                messagesBox.getChildren().add(systemMessage("Message queued for " + target, GREEN))));
 
         client.setOnStatus(msg -> Platform.runLater(() -> {
             boolean problem = msg.startsWith("Could not") || msg.startsWith("Malformed")
