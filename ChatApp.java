@@ -313,6 +313,10 @@ public class ChatApp extends Application {
         client.setOnError(err -> Platform.runLater(() -> status(statusLabel, err, RED)));
         client.setOnStatus(msg -> Platform.runLater(() -> status(statusLabel, msg, SUBTEXT)));
 
+        // Callbacks are now set — request a fresh user list in case
+        // the initial USERS message arrived before the dashboard was ready
+        client.refreshUsers();
+
         searchField.textProperty().addListener((obs, old, val) -> {
             String filter = val.toLowerCase().trim();
             filteredUsers.setPredicate(u -> filter.isEmpty() || u.toLowerCase().contains(filter));

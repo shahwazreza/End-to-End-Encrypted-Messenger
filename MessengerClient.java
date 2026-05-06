@@ -175,6 +175,10 @@ public class MessengerClient {
         t.start();
     }
 
+    public void refreshUsers() {
+        if (out != null) out.println("USERS");
+    }
+
     public void leaveChat() {
         this.peer   = null;
         this.shared = null;
