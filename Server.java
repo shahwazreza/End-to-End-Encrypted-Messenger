@@ -2,10 +2,12 @@ import java.io.*;
 import java.net.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
+import javax.net.ssl.SSLServerSocketFactory;
 
 public class Server {
 
     private static final int PORT = Integer.parseInt(System.getProperty("server.port", "5000"));
+    private static final boolean USE_TLS = Boolean.parseBoolean(System.getProperty("server.tls", System.getProperty("tls", "false")));
     private static final Logger log = Logger.getLogger(Server.class.getName());
 
     private static final ConcurrentHashMap<String, Socket> clients = new ConcurrentHashMap<>();
@@ -13,8 +15,8 @@ public class Server {
     private static final ConcurrentHashMap<String, String> publicKeys = new ConcurrentHashMap<>();
 
     public static void main(String[] args) throws IOException {
-        ServerSocket serverSocket = new ServerSocket(PORT);
-        log.info("Server listening on port " + PORT);
+        ServerSocket serverSocket = createServerSocket();
+        log.info("Server listening on port " + PORT + (USE_TLS ? " with TLS" : ""));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try { serverSocket.close(); } catch (IOException ignored) {}
@@ -33,6 +35,7 @@ public class Server {
 
     private static void handleClient(Socket socket) {
         String username = null;
+        boolean registered = false;
         try {
             BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
@@ -44,8 +47,15 @@ public class Server {
             }
             username = username.trim();
 
-            clients.put(username, socket);
+            Socket existing = clients.putIfAbsent(username, socket);
+            if (existing != null) {
+                out.println("ERROR|Username '" + username + "' is already connected");
+                log.warning("Rejected duplicate username: " + username);
+                return;
+            }
             writers.put(username, out);
+            registered = true;
+            out.println("OK|CONNECTED");
             log.info(username + " connected from " + socket.getInetAddress());
 
             String line;
@@ -78,7 +88,7 @@ public class Server {
         } catch (IOException e) {
             log.warning("Client error (" + username + "): " + e.getMessage());
         } finally {
-            if (username != null) {
+            if (registered && username != null) {
                 clients.remove(username);
                 writers.remove(username);
                 publicKeys.remove(username);
@@ -86,5 +96,12 @@ public class Server {
             }
             try { socket.close(); } catch (IOException ignored) {}
         }
+    }
+
+    private static ServerSocket createServerSocket() throws IOException {
+        if (!USE_TLS) {
+            return new ServerSocket(PORT);
+        }
+        return SSLServerSocketFactory.getDefault().createServerSocket(PORT);
     }
 }

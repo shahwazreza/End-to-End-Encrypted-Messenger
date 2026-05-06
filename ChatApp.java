@@ -59,6 +59,11 @@ public class ChatApp extends Application {
         TextField peerField     = inputField("Peer username");
         TextField hostField     = inputField("Server host  (default: localhost)");
         TextField portField     = inputField("Port  (default: 5000)");
+        CheckBox tlsCheck = new CheckBox("Use TLS");
+        tlsCheck.setSelected(Boolean.parseBoolean(System.getProperty("client.tls", System.getProperty("tls", "false"))));
+        tlsCheck.setTextFill(Color.web(SUBTEXT));
+        tlsCheck.setFont(Font.font(12));
+        tlsCheck.setMaxWidth(Double.MAX_VALUE);
 
         Button connectBtn = new Button("Connect");
         connectBtn.setMaxWidth(Double.MAX_VALUE);
@@ -94,7 +99,7 @@ public class ChatApp extends Application {
             connectBtn.setDisable(true);
             status(statusLabel, "Connecting to server...", SUBTEXT);
 
-            MessengerClient client = new MessengerClient(username, peer, host, port);
+            MessengerClient client = new MessengerClient(username, peer, host, port, tlsCheck.isSelected());
             client.setOnStatus(message ->
                 Platform.runLater(() -> status(statusLabel, message, SUBTEXT)));
 
@@ -115,7 +120,7 @@ public class ChatApp extends Application {
 
         root.getChildren().addAll(icon, title, subtitle,
                 usernameField, peerField, hostField, portField,
-                connectBtn, statusLabel);
+                tlsCheck, connectBtn, statusLabel);
 
         primaryStage.setScene(new Scene(root, 420, 510));
     }

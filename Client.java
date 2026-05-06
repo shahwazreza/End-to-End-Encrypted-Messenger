@@ -6,6 +6,7 @@ public class Client {
 
     private static final String HOST = System.getProperty("server.host", "localhost");
     private static final int PORT = Integer.parseInt(System.getProperty("server.port", "5000"));
+    private static final boolean USE_TLS = Boolean.parseBoolean(System.getProperty("client.tls", System.getProperty("tls", "false")));
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
@@ -22,7 +23,7 @@ public class Client {
         }
 
         CountDownLatch ready = new CountDownLatch(1);
-        MessengerClient client = new MessengerClient(username, peer, HOST, PORT);
+        MessengerClient client = new MessengerClient(username, peer, HOST, PORT, USE_TLS);
 
         client.setOnConnected(() -> {
             System.out.println("Secure channel established with " + peer + ". Type messages below:");

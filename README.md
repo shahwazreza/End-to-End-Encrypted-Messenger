@@ -97,7 +97,7 @@ Enter your username, peer's username, and click **Connect**. Both sides need to 
 
 ```powershell
 # Compile
-javac *.java crypto/*.java
+javac Client.java Server.java MessengerClient.java Main.java crypto/*.java
 
 # Start the server
 java Server
@@ -113,6 +113,42 @@ To use a custom host or port:
 
 ```powershell
 java -Dserver.host=192.168.1.10 -Dserver.port=6000 Client Alice Bob
+```
+
+### TLS transport
+
+TLS is optional and uses the standard JVM keystore and truststore settings.
+
+Create a local demo certificate:
+
+```powershell
+keytool -genkeypair -alias messenger-server -keyalg RSA -keysize 2048 `
+  -keystore server-keystore.p12 -storetype PKCS12 -storepass changeit `
+  -validity 365 -dname "CN=localhost"
+
+keytool -exportcert -alias messenger-server -keystore server-keystore.p12 `
+  -storepass changeit -rfc -file server-cert.pem
+
+keytool -importcert -alias messenger-server -file server-cert.pem `
+  -keystore client-truststore.p12 -storetype PKCS12 -storepass changeit -noprompt
+```
+
+Run the TLS server:
+
+```powershell
+java -Dserver.tls=true `
+  -Djavax.net.ssl.keyStore=server-keystore.p12 `
+  -Djavax.net.ssl.keyStorePassword=changeit `
+  Server
+```
+
+Run TLS clients:
+
+```powershell
+java -Dclient.tls=true `
+  -Djavax.net.ssl.trustStore=client-truststore.p12 `
+  -Djavax.net.ssl.trustStorePassword=changeit `
+  Client Alice Bob
 ```
 
 
