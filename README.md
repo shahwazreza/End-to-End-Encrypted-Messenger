@@ -172,7 +172,7 @@ java "-Dclient.tls=true" `
 ## Planned Improvements
 
 - Web frontend (React + WebCrypto API)
-- TLS transport layer (SSLServerSocket) to protect key exchange in transit
-- Persistent key storage
+- ~~TLS transport layer (SSLServerSocket) to protect key exchange in transit~~
+- ~~Persistent key storage~~
 - Group messaging
 - Message sequence numbers for replay protection

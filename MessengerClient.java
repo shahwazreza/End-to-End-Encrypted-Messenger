@@ -81,7 +81,9 @@ public class MessengerClient {
         if (hello.startsWith("ERROR|")) throw new IOException(hello.substring(6));
         if (!hello.equals("OK|CONNECTED")) throw new IOException("Unexpected server handshake response");
 
-        KeyPair myKeys = KeyManager.generateKeyPair();
+        boolean freshIdentity = !KeyManager.hasStoredIdentity(username);
+        KeyPair myKeys = KeyManager.loadOrCreate(username);
+        fireStatus(freshIdentity ? "Generated new identity for " + username : "Loaded existing identity for " + username);
         out.println("REGISTER|" + username + "|" +
                 Base64.getEncoder().encodeToString(myKeys.getPublic().getEncoded()));
 
@@ -155,6 +157,7 @@ public class MessengerClient {
         if (out.checkError()) {
             throw new IOException("Failed to send message to server");
         }
+        MessageHistory.append(username, peer, true, text);
     }
 
     private void handleEncryptedMessage(String payload) {
@@ -168,6 +171,7 @@ public class MessengerClient {
             data.iv         = Arrays.copyOfRange(bytes, 0, 12);
             data.ciphertext = Arrays.copyOfRange(bytes, 12, bytes.length);
             String decrypted = Encryption.decrypt(data, shared);
+            MessageHistory.append(username, peer, false, decrypted);
             if (onMessageReceived != null) onMessageReceived.accept(decrypted);
         } catch (Exception e) {
             fireStatus("Could not decrypt a message from " + peer);
