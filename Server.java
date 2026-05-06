@@ -69,6 +69,8 @@ public class Server {
                         PrintWriter recipientOut = writers.get(parts[0].trim());
                         if (recipientOut != null) {
                             recipientOut.println("MSG|" + username + "|" + parts[1]);
+                        } else {
+                            out.println("ERROR|Message was not delivered because " + parts[0].trim() + " is not connected");
                         }
                     }
                 }
