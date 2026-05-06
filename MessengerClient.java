@@ -33,6 +33,7 @@ public class MessengerClient {
     private Runnable onConnected;
     private Consumer<String> onMessageReceived;
     private Consumer<String> onError;
+    private Consumer<String> onStatus;
     private Runnable onDisconnected;
 
     public MessengerClient(String username, String peer, String host, int port) {
@@ -45,6 +46,7 @@ public class MessengerClient {
     public void setOnConnected(Runnable handler)             { this.onConnected = handler; }
     public void setOnMessageReceived(Consumer<String> handler) { this.onMessageReceived = handler; }
     public void setOnError(Consumer<String> handler)          { this.onError = handler; }
+    public void setOnStatus(Consumer<String> handler)         { this.onStatus = handler; }
     public void setOnDisconnected(Runnable handler)           { this.onDisconnected = handler; }
     public String getPeer() { return peer; }
 
@@ -61,6 +63,7 @@ public class MessengerClient {
     }
 
     private void connect() throws Exception {
+        fireStatus("Connecting to " + host + ":" + port + "...");
         socket = new Socket(host, port);
         BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
         out = new PrintWriter(socket.getOutputStream(), true);
@@ -74,6 +77,7 @@ public class MessengerClient {
         String peerKeyB64 = null;
         List<String> pendingMessages = new ArrayList<>();
         long deadline = System.currentTimeMillis() + PEER_KEY_TIMEOUT_MS;
+        fireStatus("Waiting for " + peer + " to connect...");
         while (peerKeyB64 == null || peerKeyB64.equals("null")) {
             if (System.currentTimeMillis() >= deadline)
                 throw new Exception("Timed out waiting for '" + peer + "' to connect");
@@ -87,7 +91,12 @@ public class MessengerClient {
                 }
                 continue;
             }
+            if (response.startsWith("ERROR|")) {
+                fireStatus(response.substring(6));
+                continue;
+            }
             if (!response.startsWith("KEY|")) {
+                fireStatus("Ignored unexpected server response");
                 continue;
             }
             peerKeyB64 = response.substring(4);
@@ -101,6 +110,7 @@ public class MessengerClient {
                 .generatePublic(new X509EncodedKeySpec(Base64.getDecoder().decode(peerKeyB64)));
         shared = KeyDerivation.deriveSharedKey(myKeys.getPrivate(), peerPublic);
 
+        fireStatus("Secure channel established with " + peer);
         if (onConnected != null) onConnected.run();
         for (String pendingMessage : pendingMessages) {
             handleEncryptedMessage(pendingMessage);
@@ -113,9 +123,14 @@ public class MessengerClient {
                 if (parts.length == 3 && parts[1].equals(peer)) {
                     handleEncryptedMessage(parts[2]);
                 }
+            } else if (msg.startsWith("ERROR|")) {
+                fireStatus(msg.substring(6));
+            } else {
+                fireStatus("Ignored unexpected server response");
             }
         }
 
+        fireStatus("Disconnected from server");
         if (onDisconnected != null) onDisconnected.run();
     }
 
@@ -126,19 +141,31 @@ public class MessengerClient {
         System.arraycopy(enc.iv,         0, combined, 0,              enc.iv.length);
         System.arraycopy(enc.ciphertext, 0, combined, enc.iv.length,  enc.ciphertext.length);
         out.println(peer + "|" + Base64.getEncoder().encodeToString(combined));
+        if (out.checkError()) {
+            throw new IOException("Failed to send message to server");
+        }
     }
 
     private void handleEncryptedMessage(String payload) {
         try {
             byte[] bytes = Base64.getDecoder().decode(payload);
+            if (bytes.length <= 12) {
+                fireStatus("Received malformed encrypted message");
+                return;
+            }
             Encryption.EncryptedData data = new Encryption.EncryptedData();
             data.iv         = Arrays.copyOfRange(bytes, 0, 12);
             data.ciphertext = Arrays.copyOfRange(bytes, 12, bytes.length);
             String decrypted = Encryption.decrypt(data, shared);
             if (onMessageReceived != null) onMessageReceived.accept(decrypted);
         } catch (Exception e) {
+            fireStatus("Could not decrypt a message from " + peer);
             log.warning("Decryption failed: " + e.getMessage());
         }
+    }
+
+    private void fireStatus(String message) {
+        if (onStatus != null) onStatus.accept(message);
     }
 
     public void disconnect() {

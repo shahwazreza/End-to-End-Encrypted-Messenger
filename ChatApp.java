@@ -95,6 +95,8 @@ public class ChatApp extends Application {
             status(statusLabel, "Connecting to server...", SUBTEXT);
 
             MessengerClient client = new MessengerClient(username, peer, host, port);
+            client.setOnStatus(message ->
+                Platform.runLater(() -> status(statusLabel, message, SUBTEXT)));
 
             client.setOnConnected(() ->
                 Platform.runLater(() -> showChat(client, username, peer)));
@@ -106,14 +108,6 @@ public class ChatApp extends Application {
 
             client.connectAsync();
 
-            // Update status label once we're past the initial connection
-            new Thread(() -> {
-                try { Thread.sleep(1200); } catch (InterruptedException ignored) {}
-                Platform.runLater(() -> {
-                    if (connectBtn.isDisabled())
-                        status(statusLabel, "Waiting for " + peer + " to connect...", SUBTEXT);
-                });
-            }).start();
         });
 
         // Allow pressing Enter in the last field to trigger connect
@@ -142,6 +136,13 @@ public class ChatApp extends Application {
         peerLabel.setFont(Font.font("System", FontWeight.BOLD, 15));
         peerLabel.setTextFill(Color.web(TEXT));
 
+        Label connectionLabel = new Label("Secure channel active");
+        connectionLabel.setFont(Font.font(11));
+        connectionLabel.setTextFill(Color.web(GREEN));
+
+        VBox peerBlock = new VBox(2, peerLabel, connectionLabel);
+        peerBlock.setAlignment(Pos.CENTER_LEFT);
+
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
@@ -149,7 +150,7 @@ public class ChatApp extends Application {
         encBadge.setFont(Font.font(11));
         encBadge.setTextFill(Color.web(GREEN));
 
-        header.getChildren().addAll(lockIcon, peerLabel, spacer, encBadge);
+        header.getChildren().addAll(lockIcon, peerBlock, spacer, encBadge);
 
         // Message list
         VBox messagesBox = new VBox(6);
@@ -191,7 +192,7 @@ public class ChatApp extends Application {
                 messagesBox.getChildren().add(bubble(text, true));
                 inputField.clear();
             } catch (Exception ex) {
-                messagesBox.getChildren().add(systemMessage("Send failed: " + ex.getMessage()));
+                messagesBox.getChildren().add(systemMessage("Send failed: " + ex.getMessage(), RED));
             }
         };
 
@@ -201,8 +202,33 @@ public class ChatApp extends Application {
         client.setOnMessageReceived(msg ->
                 Platform.runLater(() -> messagesBox.getChildren().add(bubble(msg, false))));
 
-        client.setOnDisconnected(() ->
-                Platform.runLater(() -> messagesBox.getChildren().add(systemMessage(peer + " disconnected."))));
+        client.setOnStatus(message -> Platform.runLater(() -> {
+            boolean problem = message.startsWith("Could not")
+                    || message.startsWith("Received malformed")
+                    || message.startsWith("Message was not delivered")
+                    || message.startsWith("Disconnected");
+            connectionLabel.setText(message);
+            connectionLabel.setTextFill(Color.web(problem ? RED : GREEN));
+            if (problem) {
+                messagesBox.getChildren().add(systemMessage(message, RED));
+            }
+        }));
+
+        client.setOnError(err -> Platform.runLater(() -> {
+            connectionLabel.setText("Connection error");
+            connectionLabel.setTextFill(Color.web(RED));
+            inputField.setDisable(true);
+            sendBtn.setDisable(true);
+            messagesBox.getChildren().add(systemMessage("Connection error: " + err, RED));
+        }));
+
+        client.setOnDisconnected(() -> Platform.runLater(() -> {
+            connectionLabel.setText("Disconnected");
+            connectionLabel.setTextFill(Color.web(RED));
+            inputField.setDisable(true);
+            sendBtn.setDisable(true);
+            messagesBox.getChildren().add(systemMessage(peer + " disconnected.", RED));
+        }));
 
         VBox root = new VBox(header, scroll, inputRow);
         root.setStyle("-fx-background-color: " + BG + ";");
@@ -234,9 +260,13 @@ public class ChatApp extends Application {
     }
 
     private Label systemMessage(String text) {
+        return systemMessage(text, MUTED);
+    }
+
+    private Label systemMessage(String text, String color) {
         Label label = new Label(text);
         label.setFont(Font.font(11));
-        label.setTextFill(Color.web(MUTED));
+        label.setTextFill(Color.web(color));
         label.setMaxWidth(Double.MAX_VALUE);
         label.setAlignment(Pos.CENTER);
         label.setPadding(new Insets(4, 0, 4, 0));

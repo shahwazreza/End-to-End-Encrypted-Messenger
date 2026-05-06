@@ -29,6 +29,7 @@ public class Client {
             ready.countDown();
         });
         client.setOnMessageReceived(msg -> System.out.println("[" + peer + "]: " + msg));
+        client.setOnStatus(status -> System.out.println("* " + status));
         client.setOnError(err -> {
             System.err.println("Error: " + err);
             System.exit(1);
