@@ -1,23 +1,25 @@
-# End-to-End Encrypted Messenger (Java)
+# End-to-End Encrypted Messenger v2 (Java)
 
-A minimal end-to-end encrypted messaging system built in Java.  
-Clients exchange public keys, derive a shared secret, and send encrypted messages through a relay server that cannot read message contents.
+A full end-to-end encrypted messaging application built in Java.  
+Users create accounts, sign in, browse online users on a live dashboard, and chat with end-to-end encryption — the server never sees message contents or plaintext passwords.
 
 This project demonstrates real E2EE fundamentals:
-- X25519 Diffie-Hellman key agreement
+- X25519 Diffie-Hellman key exchange
 - HKDF key derivation (RFC 5869)
 - AES-256-GCM authenticated encryption
-- Secure client-to-client messaging over a network
+- PBKDF2WithHmacSHA256 password hashing
+- Persistent identity and message history
 
 
 ## Features
 
-- End-to-end encryption — server never sees plaintext
-- AES-256-GCM authenticated encryption
-- X25519 key agreement with HKDF-derived session keys
-- Public key registration and retrieval
-- Multi-client communication
-- Configurable host and port
+- **Account system** — register and sign in with a username and password
+- **Live dashboard** — see who's online in real time, search by username
+- **End-to-end encryption** — server never sees plaintext
+- **Persistent identity** — X25519 key pair saved per user, consistent across sessions
+- **Message history** — chat history saved locally and restored on reconnect
+- **TLS transport** — optional TLS layer to protect the connection
+- **JavaFX desktop GUI** and **CLI** client
 
 
 ## File Structure
@@ -25,15 +27,17 @@ This project demonstrates real E2EE fundamentals:
 ```
 e2ee-messenger/
 │
-├── ChatApp.java          ← JavaFX desktop UI
-├── MessengerClient.java  ← shared networking/crypto core
-├── Client.java           ← CLI client (uses MessengerClient)
-├── Server.java           ← relay server
-├── Main.java             ← crypto demo / smoke test
+├── ChatApp.java          ← JavaFX desktop GUI (auth, dashboard, chat screens)
+├── MessengerClient.java  ← networking/crypto core (auth + dashboard + chat)
+├── Client.java           ← CLI client
+├── Server.java           ← relay server with account auth and user broadcasting
+├── AccountStore.java     ← PBKDF2 password hashing + account persistence
+├── MessageHistory.java   ← per-user chat history (save + load)
+├── Main.java             ← crypto smoke test
 ├── pom.xml
 │
 ├── crypto/
-│   ├── KeyManager.java
+│   ├── KeyManager.java   ← X25519 key pair generation + persistent storage
 │   ├── KeyDerivation.java
 │   └── Encryption.java
 │
@@ -43,13 +47,16 @@ e2ee-messenger/
 
 ## How It Works
 
-### 1. Key Generation
-Each client generates an X25519 key pair on startup. The public key is registered with the server; the private key never leaves the client.
+### 1. Account Authentication
+On first use, the client sends `REGISTER_ACCOUNT|username|password`. On subsequent sessions, it sends `LOGIN|username|password`. The server hashes passwords with PBKDF2WithHmacSHA256 (310,000 iterations, random salt) and stores them in `~/.messenger-server/accounts.dat`. Passwords are never stored or transmitted in plaintext.
 
-### 2. Key Exchange
-The client polls the server for the peer's public key, then derives a shared secret using X25519 Diffie-Hellman. The raw shared secret is passed through HKDF (HMAC-SHA256, RFC 5869) to produce a 32-byte AES-256 key.
+### 2. Dashboard
+After authentication, the server sends the current online user list and broadcasts `USER_JOINED` / `USER_LEFT` events in real time. The GUI dashboard updates live.
 
-### 3. Encryption
+### 3. Key Exchange
+When a user starts a chat, their X25519 key pair is loaded from `~/.messenger/<username>/` (or generated on first use). The public key is registered with the server, and the client polls for the peer's public key. Once both keys are available, a shared secret is derived using X25519 + HKDF (RFC 5869, HMAC-SHA256) to produce a 32-byte AES-256 key.
+
+### 4. Encryption
 Every message is encrypted with AES-256-GCM using a unique 12-byte random IV:
 
 ```
@@ -58,13 +65,16 @@ AES/GCM/NoPadding  |  256-bit key  |  128-bit auth tag  |  12-byte IV
 
 The IV is prepended to the ciphertext and Base64-encoded before sending.
 
-### 4. Message Flow
+### 5. Message Flow
 
 ```
 Sender → encrypt(AES-256-GCM) → server relay → receiver → decrypt
 ```
 
-The server only forwards ciphertext and never has access to keys or plaintext.
+The server only forwards ciphertext. It never has access to keys or plaintext.
+
+### 6. Message History
+Sent and received messages are saved to `~/.messenger/<username>/history/<peer>.log` and displayed when a chat is reopened.
 
 
 ## How to Run
@@ -82,14 +92,17 @@ The server only forwards ciphertext and never has access to keys or plaintext.
 Maven downloads JavaFX automatically on first run.
 
 ```powershell
-# Start the server
+# Terminal 1 — start the server
 java Server
 
-# Launch the GUI (in a separate terminal)
+# Terminal 2 — launch the GUI
 mvn javafx:run
 ```
 
-Enter your username, peer's username, and click **Connect**. Both sides need to be connected for the key exchange to complete (30-second timeout).
+**First time:** select **Register**, enter a username and password, click **Create Account**.  
+**Returning:** select **Sign In**, enter your credentials, click **Sign In**.  
+
+Once signed in, the dashboard shows all online users. Click **Chat** next to a username to open a secure chat. Both users need to be online for the key exchange to complete (30-second timeout).
 
 ---
 
@@ -97,64 +110,68 @@ Enter your username, peer's username, and click **Connect**. Both sides need to 
 
 ```powershell
 # Compile
-javac Client.java Server.java MessengerClient.java Main.java crypto/*.java
+javac AccountStore.java MessageHistory.java crypto/*.java
+javac -cp . Server.java MessengerClient.java Client.java
 
 # Start the server
 java Server
 
-# Terminal 1
-java Client Alice Bob
+# Register (first time)
+java Client --register alice mypassword bob
 
-# Terminal 2
-java Client Bob Alice
+# Login (after registering)
+java Client alice mypassword bob
 ```
 
 To use a custom host or port:
 
 ```powershell
-java -Dserver.host=192.168.1.10 -Dserver.port=6000 Client Alice Bob
+java -Dserver.host=192.168.1.10 -Dserver.port=6000 Client alice mypassword bob
 ```
+
+---
 
 ### TLS transport
 
 TLS is optional and uses the standard JVM keystore and truststore settings.
 
-In the JavaFX app, click **Start local TLS server** on the login screen. The app creates `server-keystore.p12`, `server-cert.pem`, and `client-truststore.p12`, starts the TLS server in the background, and enables the TLS checkbox.
+In the JavaFX GUI, click **Start local TLS server** on the auth screen. The app generates certificates, starts a TLS server in the background, and enables the TLS checkbox automatically.
 
-Connect both GUI clients with **Use TLS** selected. If the app says the port is already in use, stop any old `java Server` terminal first.
-
-Create a local demo certificate:
+To run TLS manually:
 
 ```powershell
+# Generate certificate
 keytool -genkeypair -alias messenger-server -keyalg RSA -keysize 2048 `
   -keystore server-keystore.p12 -storetype PKCS12 -storepass changeit `
-  -validity 365 -dname "CN=localhost"
+  -validity 365 -dname "CN=localhost" -ext "SAN=DNS:localhost,IP:127.0.0.1"
 
 keytool -exportcert -alias messenger-server -keystore server-keystore.p12 `
   -storepass changeit -rfc -file server-cert.pem
 
 keytool -importcert -alias messenger-server -file server-cert.pem `
   -keystore client-truststore.p12 -storetype PKCS12 -storepass changeit -noprompt
-```
 
-Run the TLS server:
-
-```powershell
+# Start TLS server
 java "-Dserver.tls=true" `
-  -cp "C:\Users\PC_World\Desktop\End-to-End-Encrypted-Messenger;C:\Users\PC_World\Desktop\End-to-End-Encrypted-Messenger\target\classes" `
   "-Djavax.net.ssl.keyStore=server-keystore.p12" `
   "-Djavax.net.ssl.keyStorePassword=changeit" `
-  Server
-```
+  -cp "." Server
 
-Run TLS clients:
-
-```powershell
+# Connect TLS clients
 java "-Dclient.tls=true" `
   "-Djavax.net.ssl.trustStore=client-truststore.p12" `
   "-Djavax.net.ssl.trustStorePassword=changeit" `
-  Client Alice Bob
+  Client alice mypassword bob
 ```
+
+
+## Data Storage
+
+| What | Where |
+|---|---|
+| Account credentials | `~/.messenger-server/accounts.dat` |
+| Identity key pair | `~/.messenger/<username>/identity.priv` + `identity.pub` |
+| Chat history | `~/.messenger/<username>/history/<peer>.log` |
 
 
 ## Security Properties
@@ -166,6 +183,7 @@ java "-Dclient.tls=true" `
 | Key agreement | X25519 Diffie-Hellman |
 | Key derivation | HKDF-Extract + HKDF-Expand (RFC 5869, HMAC-SHA256) |
 | IV generation | 12-byte cryptographically random per message |
+| Password storage | PBKDF2WithHmacSHA256, 310,000 iterations, random salt |
 | Server access | Zero — relays ciphertext only |
 
 
@@ -174,5 +192,6 @@ java "-Dclient.tls=true" `
 - Web frontend (React + WebCrypto API)
 - ~~TLS transport layer (SSLServerSocket) to protect key exchange in transit~~
 - ~~Persistent key storage~~
+- ~~Persistent message history~~
 - Group messaging
 - Message sequence numbers for replay protection
