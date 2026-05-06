@@ -9,7 +9,7 @@ import java.util.*;
 public class MessageHistory {
 
     private static final DateTimeFormatter TIME_FMT =
-            DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault());
+            DateTimeFormatter.ofPattern("MMM d, yyyy  HH:mm").withZone(ZoneId.systemDefault());
 
     public record Entry(long timestamp, boolean sent, String text) {
         public String formattedTime() {

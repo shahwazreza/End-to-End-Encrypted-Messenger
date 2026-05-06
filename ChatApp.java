@@ -231,8 +231,13 @@ public class ChatApp extends Application {
         if (!history.isEmpty()) {
             messagesBox.getChildren().add(systemMessage("── Previous messages ──"));
             for (MessageHistory.Entry entry : history) {
-                messagesBox.getChildren().add(bubble(
-                        entry.formattedTime() + "  " + entry.text(), entry.sent()));
+                Label timeLabel = new Label(entry.formattedTime());
+                timeLabel.setFont(Font.font(10));
+                timeLabel.setTextFill(Color.web(MUTED));
+                timeLabel.setMaxWidth(Double.MAX_VALUE);
+                timeLabel.setAlignment(entry.sent() ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
+                VBox messageGroup = new VBox(2, timeLabel, bubble(entry.text(), entry.sent()));
+                messagesBox.getChildren().add(messageGroup);
             }
             messagesBox.getChildren().add(systemMessage("── Now ──"));
         }
