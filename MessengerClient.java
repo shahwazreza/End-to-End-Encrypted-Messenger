@@ -175,6 +175,10 @@ public class MessengerClient {
         t.start();
     }
 
+    public void refreshUsers() {
+        if (out != null) out.println("USERS");
+    }
+
     public void leaveChat() {
         this.peer   = null;
         this.shared = null;
@@ -231,8 +235,9 @@ public class MessengerClient {
     }
 
     private Socket createSocket() throws IOException {
-        return useTls
-                ? SSLSocketFactory.getDefault().createSocket(host, port)
-                : new Socket(host, port);
+        Socket s = new Socket();
+        s.connect(new java.net.InetSocketAddress(host, port), 5_000);
+        if (!useTls) return s;
+        return ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(s, host, port, true);
     }
 }
