@@ -1,2 +1,6 @@
 *.class
 target/
+server-keystore.p12
+server-cert.pem
+client-truststore.p12
+tls-server.log

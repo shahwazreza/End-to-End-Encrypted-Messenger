@@ -15,6 +15,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.logging.Logger;
+import javax.net.ssl.SSLSocketFactory;
 
 public class MessengerClient {
 
@@ -25,6 +26,7 @@ public class MessengerClient {
     private final String peer;
     private final String host;
     private final int port;
+    private final boolean useTls;
 
     private Socket socket;
     private PrintWriter out;
@@ -37,10 +39,15 @@ public class MessengerClient {
     private Runnable onDisconnected;
 
     public MessengerClient(String username, String peer, String host, int port) {
+        this(username, peer, host, port, false);
+    }
+
+    public MessengerClient(String username, String peer, String host, int port, boolean useTls) {
         this.username = username;
         this.peer = peer;
         this.host = host;
         this.port = port;
+        this.useTls = useTls;
     }
 
     public void setOnConnected(Runnable handler)             { this.onConnected = handler; }
@@ -55,7 +62,7 @@ public class MessengerClient {
             try {
                 connect();
             } catch (Exception e) {
-                if (onError != null) onError.accept(e.getMessage());
+                if (onError != null) onError.accept(userFriendlyError(e));
             }
         });
         t.setDaemon(true);
@@ -63,12 +70,16 @@ public class MessengerClient {
     }
 
     private void connect() throws Exception {
-        fireStatus("Connecting to " + host + ":" + port + "...");
-        socket = new Socket(host, port);
+        fireStatus("Connecting to " + host + ":" + port + (useTls ? " with TLS..." : "..."));
+        socket = createSocket();
         BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
         out = new PrintWriter(socket.getOutputStream(), true);
 
         out.println(username);
+        String hello = in.readLine();
+        if (hello == null) throw new EOFException("Server closed the connection");
+        if (hello.startsWith("ERROR|")) throw new IOException(hello.substring(6));
+        if (!hello.equals("OK|CONNECTED")) throw new IOException("Unexpected server handshake response");
 
         KeyPair myKeys = KeyManager.generateKeyPair();
         out.println("REGISTER|" + username + "|" +
@@ -166,6 +177,22 @@ public class MessengerClient {
 
     private void fireStatus(String message) {
         if (onStatus != null) onStatus.accept(message);
+    }
+
+    private String userFriendlyError(Exception e) {
+        String message = e.getMessage();
+        if (message != null && message.contains("Unsupported or unrecognized SSL message")) {
+            return "TLS is enabled, but the server on " + host + ":" + port
+                    + " is not using TLS. Stop the plain server and start the TLS server.";
+        }
+        return message != null ? message : e.getClass().getSimpleName();
+    }
+
+    private Socket createSocket() throws IOException {
+        if (!useTls) {
+            return new Socket(host, port);
+        }
+        return SSLSocketFactory.getDefault().createSocket(host, port);
     }
 
     public void disconnect() {
