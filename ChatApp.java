@@ -137,20 +137,34 @@ public class ChatApp extends Application {
             connectBtn.setDisable(true);
             status(statusLabel, "Connecting...", SUBTEXT);
 
-            try { configureLocalTrustStore(); }
-            catch (IOException ex) {
-                status(statusLabel, ex.getMessage(), RED);
-                connectBtn.setDisable(false); return;
-            }
-
-            MessengerClient client = new MessengerClient(username, password, host, port, true);
-            client.setOnStatus(msg -> Platform.runLater(() -> status(statusLabel, msg, SUBTEXT)));
-            client.setOnAuthSuccess(() -> Platform.runLater(() -> showDashboard(client)));
-            client.setOnError(err -> Platform.runLater(() -> {
-                status(statusLabel, err, RED);
-                connectBtn.setDisable(false);
-            }));
-            client.connectAsync(isRegister[0]);
+            boolean isLocal = host.equals("localhost") || host.equals("127.0.0.1");
+            int finalPort = port; String finalHost = host; boolean reg = isRegister[0];
+            new Thread(() -> {
+                try {
+                    if (isLocal) {
+                        if (!isPortOpen(finalHost, finalPort)) {
+                            Platform.runLater(() -> status(statusLabel, "Starting TLS server...", SUBTEXT));
+                            TlsConfig cfg = setupLocalTls();
+                            startLocalTlsServer(cfg, finalPort);
+                        } else {
+                            configureLocalTrustStore();
+                        }
+                    }
+                    MessengerClient client = new MessengerClient(username, password, finalHost, finalPort, true);
+                    client.setOnStatus(msg -> Platform.runLater(() -> status(statusLabel, msg, SUBTEXT)));
+                    client.setOnAuthSuccess(() -> Platform.runLater(() -> showDashboard(client)));
+                    client.setOnError(err -> Platform.runLater(() -> {
+                        status(statusLabel, err, RED);
+                        connectBtn.setDisable(false);
+                    }));
+                    client.connectAsync(reg);
+                } catch (Exception ex) {
+                    Platform.runLater(() -> {
+                        status(statusLabel, ex.getMessage(), RED);
+                        connectBtn.setDisable(false);
+                    });
+                }
+            }).start();
         });
 
         portField.setOnAction(ev -> connectBtn.fire());
