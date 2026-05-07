@@ -139,30 +139,8 @@ public class ChatApp extends Application {
 
             boolean isLocal = host.equals("localhost") || host.equals("127.0.0.1");
             int finalPort = port; String finalHost = host; boolean reg = isRegister[0];
-            new Thread(() -> {
-                try {
-                    if (isLocal) {
-                        TlsConfig cfg = setupLocalTls();
-                        if (!isPortOpen(finalHost, finalPort)) {
-                            Platform.runLater(() -> status(statusLabel, "Starting TLS server...", SUBTEXT));
-                            startLocalTlsServer(cfg, finalPort);
-                        }
-                    }
-                    MessengerClient client = new MessengerClient(username, password, finalHost, finalPort, true);
-                    client.setOnStatus(msg -> Platform.runLater(() -> status(statusLabel, msg, SUBTEXT)));
-                    client.setOnAuthSuccess(() -> Platform.runLater(() -> showDashboard(client)));
-                    client.setOnError(err -> Platform.runLater(() -> {
-                        status(statusLabel, err, RED);
-                        connectBtn.setDisable(false);
-                    }));
-                    client.connectAsync(reg);
-                } catch (Exception ex) {
-                    Platform.runLater(() -> {
-                        status(statusLabel, ex.getMessage(), RED);
-                        connectBtn.setDisable(false);
-                    });
-                }
-            }).start();
+            new Thread(() -> doConnect(username, password, finalHost, finalPort, reg, isLocal,
+                    connectBtn, statusLabel, false)).start();
         });
 
         portField.setOnAction(ev -> connectBtn.fire());
@@ -586,6 +564,52 @@ public class ChatApp extends Application {
         label.setTextFill(Color.web(color));
     }
 
+    // ── Connect ───────────────────────────────────────────────────────────────
+
+    private void doConnect(String username, String password, String host, int port,
+                           boolean register, boolean isLocal, Button connectBtn,
+                           Label statusLabel, boolean isRetry) {
+        try {
+            if (isLocal) {
+                TlsConfig cfg = setupLocalTls();
+                if (!isPortOpen(host, port)) {
+                    Platform.runLater(() -> status(statusLabel, "Starting TLS server...", SUBTEXT));
+                    startLocalTlsServer(cfg, port);
+                }
+            }
+            MessengerClient client = new MessengerClient(username, password, host, port, true);
+            client.setOnStatus(msg -> Platform.runLater(() -> status(statusLabel, msg, SUBTEXT)));
+            client.setOnAuthSuccess(() -> Platform.runLater(() -> showDashboard(client)));
+            client.setOnError(err -> Platform.runLater(() -> {
+                if (!isRetry && (err.contains("PKIX") || err.contains("certificate"))) {
+                    try {
+                        Path dir = tlsDir();
+                        Files.deleteIfExists(dir.resolve("server-keystore.p12"));
+                        Files.deleteIfExists(dir.resolve("server-cert.pem"));
+                        Files.deleteIfExists(dir.resolve("client-truststore.p12"));
+                        if (localServerProcess != null && localServerProcess.isAlive()) {
+                            localServerProcess.destroyForcibly();
+                            localServerProcess = null;
+                        }
+                        killProcessOnPort(port);
+                    } catch (Exception ignored) {}
+                    status(statusLabel, "Refreshing certificates...", SUBTEXT);
+                    new Thread(() -> doConnect(username, password, host, port,
+                            register, isLocal, connectBtn, statusLabel, true)).start();
+                } else {
+                    status(statusLabel, err, RED);
+                    connectBtn.setDisable(false);
+                }
+            }));
+            client.connectAsync(register);
+        } catch (Exception ex) {
+            Platform.runLater(() -> {
+                status(statusLabel, ex.getMessage(), RED);
+                connectBtn.setDisable(false);
+            });
+        }
+    }
+
     // ── TLS ───────────────────────────────────────────────────────────────────
 
     private static Path tlsDir() throws IOException {
@@ -673,6 +697,20 @@ public class ChatApp extends Application {
     private Path findJava() {
         String exe = System.getProperty("os.name", "").toLowerCase().contains("win") ? "java.exe" : "java";
         return Paths.get(System.getProperty("java.home")).resolve("bin").resolve(exe);
+    }
+
+    private void killProcessOnPort(int port) throws Exception {
+        boolean win = System.getProperty("os.name", "").toLowerCase().contains("win");
+        if (win) {
+            Process p = new ProcessBuilder("cmd", "/c",
+                    "for /f \"tokens=5\" %a in ('netstat -ano ^| findstr /R \":" + port + " .*LISTENING\"') do taskkill /F /PID %a")
+                    .redirectErrorStream(true).start();
+            p.waitFor();
+        } else {
+            new ProcessBuilder("sh", "-c", "lsof -ti:" + port + " | xargs kill -9")
+                    .redirectErrorStream(true).start().waitFor();
+        }
+        Thread.sleep(500);
     }
 
     private String serverClassPath(Path cwd) {
