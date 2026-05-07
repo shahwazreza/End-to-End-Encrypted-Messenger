@@ -89,19 +89,16 @@ Sent and received messages are saved to `~/.messenger/<username>/history/<peer>.
 
 ### Desktop GUI (JavaFX)
 
-Maven downloads JavaFX automatically on first run.
-
 ```powershell
-# Launch the GUI
 mvn javafx:run
 ```
+
+That's it. Maven compiles everything automatically. TLS certificates are generated and the server starts in the background on first connect — no terminal setup needed.
 
 **First time:** select **Register**, enter a username and password, click **Create Account**.  
 **Returning:** select **Sign In**, enter your credentials, click **Sign In**.  
 
-When connecting to `localhost`, the GUI automatically generates TLS certificates and starts a TLS server in the background — no manual setup needed. For a remote server, point the host field at it and ensure the remote server is running with TLS.
-
-Once signed in, the dashboard shows all online users. Click **Chat** next to a username to open a secure chat. Both users need to be online for the key exchange to complete (30-second timeout).
+To connect to a remote server, change the host field on the login screen. Once signed in, the dashboard shows all online users. Click **Chat** next to a username to open a secure chat. Both users need to be online for the key exchange to complete (30-second timeout).
 
 ---
 
