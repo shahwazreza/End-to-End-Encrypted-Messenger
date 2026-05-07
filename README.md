@@ -18,7 +18,7 @@ This project demonstrates real E2EE fundamentals:
 - **End-to-end encryption** — server never sees plaintext
 - **Persistent identity** — X25519 key pair saved per user, consistent across sessions
 - **Message history** — chat history saved locally and restored on reconnect
-- **TLS transport** — optional TLS layer to protect the connection
+- **TLS transport** — always-on TLS layer to protect the connection
 - **JavaFX desktop GUI** and **CLI** client
 
 
@@ -92,15 +92,14 @@ Sent and received messages are saved to `~/.messenger/<username>/history/<peer>.
 Maven downloads JavaFX automatically on first run.
 
 ```powershell
-# Terminal 1 — start the server
-java Server
-
-# Terminal 2 — launch the GUI
+# Launch the GUI
 mvn javafx:run
 ```
 
 **First time:** select **Register**, enter a username and password, click **Create Account**.  
 **Returning:** select **Sign In**, enter your credentials, click **Sign In**.  
+
+When connecting to `localhost`, the GUI automatically generates TLS certificates and starts a TLS server in the background — no manual setup needed. For a remote server, point the host field at it and ensure the remote server is running with TLS.
 
 Once signed in, the dashboard shows all online users. Click **Chat** next to a username to open a secure chat. Both users need to be online for the key exchange to complete (30-second timeout).
 
@@ -108,39 +107,14 @@ Once signed in, the dashboard shows all online users. Click **Chat** next to a u
 
 ### CLI (no Maven needed)
 
+TLS is on by default, so you need to generate certificates before starting the server.
+
 ```powershell
 # Compile
 javac AccountStore.java MessageHistory.java crypto/*.java
 javac -cp . Server.java MessengerClient.java Client.java
 
-# Start the server
-java Server
-
-# Register (first time)
-java Client --register alice mypassword bob
-
-# Login (after registering)
-java Client alice mypassword bob
-```
-
-To use a custom host or port:
-
-```powershell
-java -Dserver.host=192.168.1.10 -Dserver.port=6000 Client alice mypassword bob
-```
-
----
-
-### TLS transport
-
-TLS is optional and uses the standard JVM keystore and truststore settings.
-
-In the JavaFX GUI, click **Start local TLS server** on the auth screen. The app generates certificates, starts a TLS server in the background, and enables the TLS checkbox automatically.
-
-To run TLS manually:
-
-```powershell
-# Generate certificate
+# Generate TLS certificates (one-time setup)
 keytool -genkeypair -alias messenger-server -keyalg RSA -keysize 2048 `
   -keystore server-keystore.p12 -storetype PKCS12 -storepass changeit `
   -validity 365 -dname "CN=localhost" -ext "SAN=DNS:localhost,IP:127.0.0.1"
@@ -151,17 +125,29 @@ keytool -exportcert -alias messenger-server -keystore server-keystore.p12 `
 keytool -importcert -alias messenger-server -file server-cert.pem `
   -keystore client-truststore.p12 -storetype PKCS12 -storepass changeit -noprompt
 
-# Start TLS server
-java "-Dserver.tls=true" `
-  "-Djavax.net.ssl.keyStore=server-keystore.p12" `
-  "-Djavax.net.ssl.keyStorePassword=changeit" `
-  -cp "." Server
+# Start the TLS server
+java "-Djavax.net.ssl.keyStore=server-keystore.p12" `
+     "-Djavax.net.ssl.keyStorePassword=changeit" `
+     -cp "." Server
 
-# Connect TLS clients
-java "-Dclient.tls=true" `
-  "-Djavax.net.ssl.trustStore=client-truststore.p12" `
-  "-Djavax.net.ssl.trustStorePassword=changeit" `
-  Client alice mypassword bob
+# Register (first time)
+java "-Djavax.net.ssl.trustStore=client-truststore.p12" `
+     "-Djavax.net.ssl.trustStorePassword=changeit" `
+     Client --register alice mypassword bob
+
+# Login (after registering)
+java "-Djavax.net.ssl.trustStore=client-truststore.p12" `
+     "-Djavax.net.ssl.trustStorePassword=changeit" `
+     Client alice mypassword bob
+```
+
+To use a custom host or port:
+
+```powershell
+java -Dserver.host=192.168.1.10 -Dserver.port=6000 `
+     "-Djavax.net.ssl.trustStore=client-truststore.p12" `
+     "-Djavax.net.ssl.trustStorePassword=changeit" `
+     Client alice mypassword bob
 ```
 
 

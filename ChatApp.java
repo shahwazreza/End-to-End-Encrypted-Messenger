@@ -93,17 +93,6 @@ public class ChatApp extends Application {
         TextField hostField = inputField("Server host  (default: localhost)");
         TextField portField = inputField("Port  (default: 5000)");
 
-        CheckBox tlsCheck = new CheckBox("Use TLS");
-        tlsCheck.setSelected(Boolean.parseBoolean(System.getProperty("client.tls", "false")));
-        tlsCheck.setTextFill(Color.web(SUBTEXT));
-        tlsCheck.setFont(Font.font(12));
-        tlsCheck.setMaxWidth(Double.MAX_VALUE);
-
-        Button tlsSetupBtn = new Button("Start local TLS server");
-        tlsSetupBtn.setMaxWidth(Double.MAX_VALUE);
-        tlsSetupBtn.setFont(Font.font("System", FontWeight.BOLD, 12));
-        tlsSetupBtn.setStyle(secondaryBtnStyle());
-
         Button connectBtn = new Button("Sign In");
         connectBtn.setMaxWidth(Double.MAX_VALUE);
         connectBtn.setFont(Font.font("System", FontWeight.BOLD, 14));
@@ -148,49 +137,31 @@ public class ChatApp extends Application {
             connectBtn.setDisable(true);
             status(statusLabel, "Connecting...", SUBTEXT);
 
-            if (tlsCheck.isSelected()) {
-                try { configureLocalTrustStore(); }
-                catch (IOException ex) {
-                    status(statusLabel, ex.getMessage(), RED);
-                    connectBtn.setDisable(false); return;
-                }
-            }
-
-            MessengerClient client = new MessengerClient(username, password, host, port, tlsCheck.isSelected());
-            client.setOnStatus(msg -> Platform.runLater(() -> status(statusLabel, msg, SUBTEXT)));
-            client.setOnAuthSuccess(() -> Platform.runLater(() -> showDashboard(client)));
-            client.setOnError(err -> Platform.runLater(() -> {
-                status(statusLabel, err, RED);
-                connectBtn.setDisable(false);
-            }));
-            client.connectAsync(isRegister[0]);
-        });
-
-        tlsSetupBtn.setOnAction(e -> {
-            tlsSetupBtn.setDisable(true);
-            status(statusLabel, "Setting up TLS...", SUBTEXT);
-            int serverPort;
-            try {
-                serverPort = portField.getText().trim().isEmpty() ? 5000 : Integer.parseInt(portField.getText().trim());
-            } catch (NumberFormatException ex) {
-                status(statusLabel, "Invalid port", RED);
-                tlsSetupBtn.setDisable(false); return;
-            }
+            boolean isLocal = host.equals("localhost") || host.equals("127.0.0.1");
+            int finalPort = port; String finalHost = host; boolean reg = isRegister[0];
             new Thread(() -> {
                 try {
-                    if (isPortOpen("localhost", serverPort))
-                        throw new IOException("Port " + serverPort + " already in use. Stop the old server first.");
-                    TlsConfig cfg = setupLocalTls();
-                    startLocalTlsServer(cfg, serverPort);
-                    Platform.runLater(() -> {
-                        tlsCheck.setSelected(true);
-                        status(statusLabel, "TLS server running on port " + serverPort, GREEN);
-                        tlsSetupBtn.setDisable(false);
-                    });
+                    if (isLocal) {
+                        if (isPortOpen(finalHost, finalPort)) {
+                            configureLocalTrustStore();
+                        } else {
+                            Platform.runLater(() -> status(statusLabel, "Starting TLS server...", SUBTEXT));
+                            TlsConfig cfg = setupLocalTls();
+                            startLocalTlsServer(cfg, finalPort);
+                        }
+                    }
+                    MessengerClient client = new MessengerClient(username, password, finalHost, finalPort, true);
+                    client.setOnStatus(msg -> Platform.runLater(() -> status(statusLabel, msg, SUBTEXT)));
+                    client.setOnAuthSuccess(() -> Platform.runLater(() -> showDashboard(client)));
+                    client.setOnError(err -> Platform.runLater(() -> {
+                        status(statusLabel, err, RED);
+                        connectBtn.setDisable(false);
+                    }));
+                    client.connectAsync(reg);
                 } catch (Exception ex) {
                     Platform.runLater(() -> {
-                        status(statusLabel, "TLS setup failed: " + ex.getMessage(), RED);
-                        tlsSetupBtn.setDisable(false);
+                        status(statusLabel, ex.getMessage(), RED);
+                        connectBtn.setDisable(false);
                     });
                 }
             }).start();
@@ -200,7 +171,7 @@ public class ChatApp extends Application {
 
         root.getChildren().addAll(icon, title, subtitle, modeRow,
                 usernameField, passwordField,
-                hostField, portField, tlsCheck, tlsSetupBtn,
+                hostField, portField,
                 connectBtn, statusLabel);
 
         primaryStage.setScene(new Scene(root, 420, 620));
@@ -661,7 +632,17 @@ public class ChatApp extends Application {
         builder.redirectErrorStream(true);
         builder.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile.toFile()));
         localServerProcess = builder.start();
-        Thread.sleep(900);
+        long deadline = System.currentTimeMillis() + 15_000;
+        while (!isPortOpen("localhost", port)) {
+            if (!localServerProcess.isAlive()) {
+                String output = Files.isRegularFile(logFile)
+                        ? Files.readString(logFile, StandardCharsets.UTF_8).trim() : "";
+                throw new IOException(output.isBlank() ? "TLS server exited during startup" : output);
+            }
+            if (System.currentTimeMillis() > deadline)
+                throw new IOException("TLS server did not start within 15 seconds");
+            Thread.sleep(200);
+        }
         if (!localServerProcess.isAlive()) {
             String output = Files.isRegularFile(logFile)
                     ? Files.readString(logFile, StandardCharsets.UTF_8).trim() : "";
@@ -673,7 +654,7 @@ public class ChatApp extends Application {
         if (System.getProperty("javax.net.ssl.trustStore") != null) return;
         Path trustStore = Paths.get("").toAbsolutePath().normalize().resolve("client-truststore.p12");
         if (!Files.isRegularFile(trustStore))
-            throw new IOException("Click 'Start local TLS server' before connecting with TLS");
+            throw new IOException("TLS certificates not found. Reconnect to generate them automatically.");
         System.setProperty("javax.net.ssl.trustStore", trustStore.toString());
         System.setProperty("javax.net.ssl.trustStorePassword", "changeit");
     }
