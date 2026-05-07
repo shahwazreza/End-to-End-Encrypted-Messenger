@@ -107,47 +107,24 @@ Once signed in, the dashboard shows all online users. Click **Chat** next to a u
 
 ### CLI (no Maven needed)
 
-TLS is on by default, so you need to generate certificates before starting the server.
-
 ```powershell
-# Compile
+# Compile (one-time)
 javac AccountStore.java MessageHistory.java crypto/*.java
 javac -cp . Server.java MessengerClient.java Client.java
 
-# Generate TLS certificates (one-time setup)
-keytool -genkeypair -alias messenger-server -keyalg RSA -keysize 2048 `
-  -keystore server-keystore.p12 -storetype PKCS12 -storepass changeit `
-  -validity 365 -dname "CN=localhost" -ext "SAN=DNS:localhost,IP:127.0.0.1"
+# Register (first time) — auto-generates certs and starts TLS server
+java Client --register alice mypassword bob
 
-keytool -exportcert -alias messenger-server -keystore server-keystore.p12 `
-  -storepass changeit -rfc -file server-cert.pem
-
-keytool -importcert -alias messenger-server -file server-cert.pem `
-  -keystore client-truststore.p12 -storetype PKCS12 -storepass changeit -noprompt
-
-# Start the TLS server
-java "-Djavax.net.ssl.keyStore=server-keystore.p12" `
-     "-Djavax.net.ssl.keyStorePassword=changeit" `
-     -cp "." Server
-
-# Register (first time)
-java "-Djavax.net.ssl.trustStore=client-truststore.p12" `
-     "-Djavax.net.ssl.trustStorePassword=changeit" `
-     Client --register alice mypassword bob
-
-# Login (after registering)
-java "-Djavax.net.ssl.trustStore=client-truststore.p12" `
-     "-Djavax.net.ssl.trustStorePassword=changeit" `
-     Client alice mypassword bob
+# Login
+java Client alice mypassword bob
 ```
+
+The first client to run automatically generates TLS certificates and starts the server in the background. Every subsequent client just connects to it.
 
 To use a custom host or port:
 
 ```powershell
-java -Dserver.host=192.168.1.10 -Dserver.port=6000 `
-     "-Djavax.net.ssl.trustStore=client-truststore.p12" `
-     "-Djavax.net.ssl.trustStorePassword=changeit" `
-     Client alice mypassword bob
+java -Dserver.host=192.168.1.10 -Dserver.port=6000 Client alice mypassword bob
 ```
 
 
