@@ -142,11 +142,9 @@ public class ChatApp extends Application {
             new Thread(() -> {
                 try {
                     if (isLocal) {
-                        if (isPortOpen(finalHost, finalPort)) {
-                            configureLocalTrustStore();
-                        } else {
+                        TlsConfig cfg = setupLocalTls();
+                        if (!isPortOpen(finalHost, finalPort)) {
                             Platform.runLater(() -> status(statusLabel, "Starting TLS server...", SUBTEXT));
-                            TlsConfig cfg = setupLocalTls();
                             startLocalTlsServer(cfg, finalPort);
                         }
                     }

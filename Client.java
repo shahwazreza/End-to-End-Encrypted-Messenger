@@ -33,11 +33,9 @@ public class Client {
 
         boolean isLocal = HOST.equals("localhost") || HOST.equals("127.0.0.1");
         if (USE_TLS && isLocal) {
-            if (isPortOpen(HOST, PORT)) {
-                configureLocalTrustStore();
-            } else {
+            Path keyStore = setupLocalTls();
+            if (!isPortOpen(HOST, PORT)) {
                 System.out.println("* Starting TLS server...");
-                Path keyStore = setupLocalTls();
                 startLocalTlsServer(keyStore, PORT);
             }
         }
@@ -149,15 +147,6 @@ public class Client {
                 throw new IOException("TLS server did not start within 15 seconds");
             Thread.sleep(200);
         }
-    }
-
-    private static void configureLocalTrustStore() throws IOException {
-        if (System.getProperty("javax.net.ssl.trustStore") != null) return;
-        Path trustStore = tlsDir().resolve("client-truststore.p12");
-        if (!Files.isRegularFile(trustStore))
-            throw new IOException("TLS certificates not found. Reconnect to generate them automatically.");
-        System.setProperty("javax.net.ssl.trustStore", trustStore.toString());
-        System.setProperty("javax.net.ssl.trustStorePassword", "changeit");
     }
 
     private static Path findKeytool() throws IOException {
