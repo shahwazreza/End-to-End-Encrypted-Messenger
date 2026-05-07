@@ -1,6 +1,8 @@
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.util.List;
+import java.io.*;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.util.*;
 import java.util.concurrent.CountDownLatch;
 
 public class Client {
@@ -9,9 +11,11 @@ public class Client {
     private static final int     PORT    = Integer.parseInt(System.getProperty("server.port", "5000"));
     private static final boolean USE_TLS = Boolean.parseBoolean(System.getProperty("client.tls", "true"));
 
+    private static Process serverProcess;
+
     public static void main(String[] args) throws Exception {
         boolean register = args.length > 0 && "--register".equals(args[0]);
-        String[] rest    = register ? java.util.Arrays.copyOfRange(args, 1, args.length) : args;
+        String[] rest    = register ? Arrays.copyOfRange(args, 1, args.length) : args;
 
         if (rest.length < 3) {
             System.err.println("Usage: java Client [--register] <username> <password> <peer>");
@@ -25,6 +29,17 @@ public class Client {
         if (username.isEmpty() || password.isEmpty() || peer.isEmpty() || username.equals(peer)) {
             System.err.println("Username, password, and peer must be non-empty; username and peer must differ");
             System.exit(1);
+        }
+
+        boolean isLocal = HOST.equals("localhost") || HOST.equals("127.0.0.1");
+        if (USE_TLS && isLocal) {
+            if (isPortOpen(HOST, PORT)) {
+                configureLocalTrustStore();
+            } else {
+                System.out.println("* Starting TLS server...");
+                Path keyStore = setupLocalTls();
+                startLocalTlsServer(keyStore, PORT);
+            }
         }
 
         CountDownLatch chatReady = new CountDownLatch(1);
@@ -60,5 +75,101 @@ public class Client {
             if (!text.isBlank()) client.sendMessage(text);
         }
         client.disconnect();
+    }
+
+    private static boolean isPortOpen(String host, int port) {
+        try (Socket s = new Socket()) {
+            s.connect(new InetSocketAddress(host, port), 250); return true;
+        } catch (IOException e) { return false; }
+    }
+
+    private static Path setupLocalTls() throws Exception {
+        Path cwd        = Paths.get("").toAbsolutePath().normalize();
+        Path keyStore   = cwd.resolve("server-keystore.p12");
+        Path cert       = cwd.resolve("server-cert.pem");
+        Path trustStore = cwd.resolve("client-truststore.p12");
+        Path keytool    = findKeytool();
+
+        Files.deleteIfExists(keyStore);
+        Files.deleteIfExists(cert);
+        Files.deleteIfExists(trustStore);
+
+        runKeytool(keytool, List.of("-genkeypair", "-alias", "messenger-server",
+                "-keyalg", "RSA", "-keysize", "2048",
+                "-keystore", keyStore.toString(), "-storetype", "PKCS12",
+                "-storepass", "changeit", "-keypass", "changeit",
+                "-validity", "365", "-dname", "CN=localhost",
+                "-ext", "SAN=DNS:localhost,IP:127.0.0.1"));
+        runKeytool(keytool, List.of("-exportcert", "-alias", "messenger-server",
+                "-keystore", keyStore.toString(), "-storepass", "changeit",
+                "-rfc", "-file", cert.toString()));
+        runKeytool(keytool, List.of("-importcert", "-alias", "messenger-server",
+                "-file", cert.toString(), "-keystore", trustStore.toString(),
+                "-storetype", "PKCS12", "-storepass", "changeit", "-noprompt"));
+
+        System.setProperty("javax.net.ssl.trustStore", trustStore.toString());
+        System.setProperty("javax.net.ssl.trustStorePassword", "changeit");
+        return keyStore;
+    }
+
+    private static void startLocalTlsServer(Path keyStore, int port) throws Exception {
+        if (serverProcess != null && serverProcess.isAlive()) return;
+        Path cwd     = keyStore.getParent();
+        Path logFile = cwd.resolve("tls-server.log");
+        String java  = Paths.get(System.getProperty("java.home")).resolve("bin")
+                .resolve(System.getProperty("os.name","").toLowerCase().contains("win") ? "java.exe" : "java")
+                .toString();
+        String cp    = cwd + File.pathSeparator + cwd.resolve("target").resolve("classes")
+                     + File.pathSeparator + System.getProperty("java.class.path");
+        ProcessBuilder pb = new ProcessBuilder(java,
+                "-Dserver.tls=true", "-Dserver.port=" + port,
+                "-Djavax.net.ssl.keyStore=" + keyStore,
+                "-Djavax.net.ssl.keyStorePassword=changeit",
+                "-cp", cp, "Server");
+        pb.directory(cwd.toFile());
+        pb.redirectErrorStream(true);
+        pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile.toFile()));
+        serverProcess = pb.start();
+
+        long deadline = System.currentTimeMillis() + 15_000;
+        while (!isPortOpen("localhost", port)) {
+            if (!serverProcess.isAlive()) {
+                String out = Files.isRegularFile(logFile)
+                        ? Files.readString(logFile, StandardCharsets.UTF_8).trim() : "";
+                throw new IOException(out.isBlank() ? "TLS server exited during startup" : out);
+            }
+            if (System.currentTimeMillis() > deadline)
+                throw new IOException("TLS server did not start within 15 seconds");
+            Thread.sleep(200);
+        }
+    }
+
+    private static void configureLocalTrustStore() throws IOException {
+        if (System.getProperty("javax.net.ssl.trustStore") != null) return;
+        Path trustStore = Paths.get("").toAbsolutePath().normalize().resolve("client-truststore.p12");
+        if (!Files.isRegularFile(trustStore))
+            throw new IOException("TLS certificates not found. Run from the same directory as the first client.");
+        System.setProperty("javax.net.ssl.trustStore", trustStore.toString());
+        System.setProperty("javax.net.ssl.trustStorePassword", "changeit");
+    }
+
+    private static Path findKeytool() throws IOException {
+        String exe = System.getProperty("os.name","").toLowerCase().contains("win") ? "keytool.exe" : "keytool";
+        Path javaHome = Paths.get(System.getProperty("java.home"));
+        Path kt = javaHome.resolve("bin").resolve(exe);
+        if (Files.isRegularFile(kt)) return kt;
+        Path parent = javaHome.getParent();
+        if (parent != null) { kt = parent.resolve("bin").resolve(exe); if (Files.isRegularFile(kt)) return kt; }
+        throw new IOException("Could not find keytool");
+    }
+
+    private static void runKeytool(Path keytool, List<String> args) throws Exception {
+        ProcessBuilder pb = new ProcessBuilder();
+        pb.command().add(keytool.toString());
+        pb.command().addAll(args);
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        if (p.waitFor() != 0) throw new IOException(out.isBlank() ? "keytool failed" : out.trim());
     }
 }
