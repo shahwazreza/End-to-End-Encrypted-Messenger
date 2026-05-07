@@ -139,32 +139,8 @@ public class ChatApp extends Application {
 
             boolean isLocal = host.equals("localhost") || host.equals("127.0.0.1");
             int finalPort = port; String finalHost = host; boolean reg = isRegister[0];
-            new Thread(() -> {
-                try {
-                    if (isLocal) {
-                        if (isPortOpen(finalHost, finalPort)) {
-                            configureLocalTrustStore();
-                        } else {
-                            Platform.runLater(() -> status(statusLabel, "Starting TLS server...", SUBTEXT));
-                            TlsConfig cfg = setupLocalTls();
-                            startLocalTlsServer(cfg, finalPort);
-                        }
-                    }
-                    MessengerClient client = new MessengerClient(username, password, finalHost, finalPort, true);
-                    client.setOnStatus(msg -> Platform.runLater(() -> status(statusLabel, msg, SUBTEXT)));
-                    client.setOnAuthSuccess(() -> Platform.runLater(() -> showDashboard(client)));
-                    client.setOnError(err -> Platform.runLater(() -> {
-                        status(statusLabel, err, RED);
-                        connectBtn.setDisable(false);
-                    }));
-                    client.connectAsync(reg);
-                } catch (Exception ex) {
-                    Platform.runLater(() -> {
-                        status(statusLabel, ex.getMessage(), RED);
-                        connectBtn.setDisable(false);
-                    });
-                }
-            }).start();
+            new Thread(() -> doConnect(username, password, finalHost, finalPort, reg, isLocal,
+                    connectBtn, statusLabel, false)).start();
         });
 
         portField.setOnAction(ev -> connectBtn.fire());
@@ -588,35 +564,88 @@ public class ChatApp extends Application {
         label.setTextFill(Color.web(color));
     }
 
-    // ── TLS (unchanged from v1) ───────────────────────────────────────────────
+    // ── Connect ───────────────────────────────────────────────────────────────
+
+    private void doConnect(String username, String password, String host, int port,
+                           boolean register, boolean isLocal, Button connectBtn,
+                           Label statusLabel, boolean isRetry) {
+        try {
+            if (isLocal) {
+                TlsConfig cfg = setupLocalTls();
+                if (!isPortOpen(host, port)) {
+                    Platform.runLater(() -> status(statusLabel, "Starting TLS server...", SUBTEXT));
+                    startLocalTlsServer(cfg, port);
+                }
+            }
+            MessengerClient client = new MessengerClient(username, password, host, port, true);
+            client.setOnStatus(msg -> Platform.runLater(() -> status(statusLabel, msg, SUBTEXT)));
+            client.setOnAuthSuccess(() -> Platform.runLater(() -> showDashboard(client)));
+            client.setOnError(err -> Platform.runLater(() -> {
+                if (!isRetry && (err.contains("PKIX") || err.contains("certificate"))) {
+                    try {
+                        Path dir = tlsDir();
+                        Files.deleteIfExists(dir.resolve("server-keystore.p12"));
+                        Files.deleteIfExists(dir.resolve("server-cert.pem"));
+                        Files.deleteIfExists(dir.resolve("client-truststore.p12"));
+                        if (localServerProcess != null && localServerProcess.isAlive()) {
+                            localServerProcess.destroyForcibly();
+                            localServerProcess = null;
+                        }
+                        killProcessOnPort(port);
+                    } catch (Exception ignored) {}
+                    status(statusLabel, "Refreshing certificates...", SUBTEXT);
+                    new Thread(() -> doConnect(username, password, host, port,
+                            register, isLocal, connectBtn, statusLabel, true)).start();
+                } else {
+                    status(statusLabel, err, RED);
+                    connectBtn.setDisable(false);
+                }
+            }));
+            client.connectAsync(register);
+        } catch (Exception ex) {
+            Platform.runLater(() -> {
+                status(statusLabel, ex.getMessage(), RED);
+                connectBtn.setDisable(false);
+            });
+        }
+    }
+
+    // ── TLS ───────────────────────────────────────────────────────────────────
+
+    private static Path tlsDir() throws IOException {
+        Path dir = Paths.get(System.getProperty("user.home")).resolve(".messenger").resolve("tls");
+        Files.createDirectories(dir);
+        return dir;
+    }
 
     private TlsConfig setupLocalTls() throws Exception {
-        Path cwd       = Paths.get("").toAbsolutePath().normalize();
-        Path keyStore  = cwd.resolve("server-keystore.p12");
-        Path cert      = cwd.resolve("server-cert.pem");
-        Path trustStore = cwd.resolve("client-truststore.p12");
-        Path keytool   = findKeytool();
+        Path dir        = tlsDir();
+        Path keyStore   = dir.resolve("server-keystore.p12");
+        Path cert       = dir.resolve("server-cert.pem");
+        Path trustStore = dir.resolve("client-truststore.p12");
 
-        Files.deleteIfExists(keyStore);
-        Files.deleteIfExists(cert);
-        Files.deleteIfExists(trustStore);
-
-        runKeytool(keytool, List.of("-genkeypair", "-alias", "messenger-server",
-                "-keyalg", "RSA", "-keysize", "2048",
-                "-keystore", keyStore.toString(), "-storetype", "PKCS12",
-                "-storepass", "changeit", "-keypass", "changeit",
-                "-validity", "365", "-dname", "CN=localhost",
-                "-ext", "SAN=DNS:localhost,IP:127.0.0.1"));
-        runKeytool(keytool, List.of("-exportcert", "-alias", "messenger-server",
-                "-keystore", keyStore.toString(), "-storepass", "changeit",
-                "-rfc", "-file", cert.toString()));
-        runKeytool(keytool, List.of("-importcert", "-alias", "messenger-server",
-                "-file", cert.toString(), "-keystore", trustStore.toString(),
-                "-storetype", "PKCS12", "-storepass", "changeit", "-noprompt"));
+        if (!Files.isRegularFile(keyStore) || !Files.isRegularFile(trustStore)) {
+            Files.deleteIfExists(keyStore);
+            Files.deleteIfExists(cert);
+            Files.deleteIfExists(trustStore);
+            Path keytool = findKeytool();
+            runKeytool(keytool, List.of("-genkeypair", "-alias", "messenger-server",
+                    "-keyalg", "RSA", "-keysize", "2048",
+                    "-keystore", keyStore.toString(), "-storetype", "PKCS12",
+                    "-storepass", "changeit", "-keypass", "changeit",
+                    "-validity", "365", "-dname", "CN=localhost",
+                    "-ext", "SAN=DNS:localhost,IP:127.0.0.1"));
+            runKeytool(keytool, List.of("-exportcert", "-alias", "messenger-server",
+                    "-keystore", keyStore.toString(), "-storepass", "changeit",
+                    "-rfc", "-file", cert.toString()));
+            runKeytool(keytool, List.of("-importcert", "-alias", "messenger-server",
+                    "-file", cert.toString(), "-keystore", trustStore.toString(),
+                    "-storetype", "PKCS12", "-storepass", "changeit", "-noprompt"));
+        }
 
         System.setProperty("javax.net.ssl.trustStore", trustStore.toString());
         System.setProperty("javax.net.ssl.trustStorePassword", "changeit");
-        return new TlsConfig(cwd, keyStore, trustStore);
+        return new TlsConfig(dir, keyStore, trustStore);
     }
 
     private void startLocalTlsServer(TlsConfig tlsConfig, int port) throws Exception {
@@ -652,7 +681,7 @@ public class ChatApp extends Application {
 
     private void configureLocalTrustStore() throws IOException {
         if (System.getProperty("javax.net.ssl.trustStore") != null) return;
-        Path trustStore = Paths.get("").toAbsolutePath().normalize().resolve("client-truststore.p12");
+        Path trustStore = tlsDir().resolve("client-truststore.p12");
         if (!Files.isRegularFile(trustStore))
             throw new IOException("TLS certificates not found. Reconnect to generate them automatically.");
         System.setProperty("javax.net.ssl.trustStore", trustStore.toString());
@@ -668,6 +697,20 @@ public class ChatApp extends Application {
     private Path findJava() {
         String exe = System.getProperty("os.name", "").toLowerCase().contains("win") ? "java.exe" : "java";
         return Paths.get(System.getProperty("java.home")).resolve("bin").resolve(exe);
+    }
+
+    private void killProcessOnPort(int port) throws Exception {
+        boolean win = System.getProperty("os.name", "").toLowerCase().contains("win");
+        if (win) {
+            Process p = new ProcessBuilder("cmd", "/c",
+                    "for /f \"tokens=5\" %a in ('netstat -ano ^| findstr /R \":" + port + " .*LISTENING\"') do taskkill /F /PID %a")
+                    .redirectErrorStream(true).start();
+            p.waitFor();
+        } else {
+            new ProcessBuilder("sh", "-c", "lsof -ti:" + port + " | xargs kill -9")
+                    .redirectErrorStream(true).start().waitFor();
+        }
+        Thread.sleep(500);
     }
 
     private String serverClassPath(Path cwd) {
