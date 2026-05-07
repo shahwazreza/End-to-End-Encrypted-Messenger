@@ -588,35 +588,42 @@ public class ChatApp extends Application {
         label.setTextFill(Color.web(color));
     }
 
-    // ── TLS (unchanged from v1) ───────────────────────────────────────────────
+    // ── TLS ───────────────────────────────────────────────────────────────────
+
+    private static Path tlsDir() throws IOException {
+        Path dir = Paths.get(System.getProperty("user.home")).resolve(".messenger").resolve("tls");
+        Files.createDirectories(dir);
+        return dir;
+    }
 
     private TlsConfig setupLocalTls() throws Exception {
-        Path cwd       = Paths.get("").toAbsolutePath().normalize();
-        Path keyStore  = cwd.resolve("server-keystore.p12");
-        Path cert      = cwd.resolve("server-cert.pem");
-        Path trustStore = cwd.resolve("client-truststore.p12");
-        Path keytool   = findKeytool();
+        Path dir        = tlsDir();
+        Path keyStore   = dir.resolve("server-keystore.p12");
+        Path cert       = dir.resolve("server-cert.pem");
+        Path trustStore = dir.resolve("client-truststore.p12");
 
-        Files.deleteIfExists(keyStore);
-        Files.deleteIfExists(cert);
-        Files.deleteIfExists(trustStore);
-
-        runKeytool(keytool, List.of("-genkeypair", "-alias", "messenger-server",
-                "-keyalg", "RSA", "-keysize", "2048",
-                "-keystore", keyStore.toString(), "-storetype", "PKCS12",
-                "-storepass", "changeit", "-keypass", "changeit",
-                "-validity", "365", "-dname", "CN=localhost",
-                "-ext", "SAN=DNS:localhost,IP:127.0.0.1"));
-        runKeytool(keytool, List.of("-exportcert", "-alias", "messenger-server",
-                "-keystore", keyStore.toString(), "-storepass", "changeit",
-                "-rfc", "-file", cert.toString()));
-        runKeytool(keytool, List.of("-importcert", "-alias", "messenger-server",
-                "-file", cert.toString(), "-keystore", trustStore.toString(),
-                "-storetype", "PKCS12", "-storepass", "changeit", "-noprompt"));
+        if (!Files.isRegularFile(keyStore) || !Files.isRegularFile(trustStore)) {
+            Files.deleteIfExists(keyStore);
+            Files.deleteIfExists(cert);
+            Files.deleteIfExists(trustStore);
+            Path keytool = findKeytool();
+            runKeytool(keytool, List.of("-genkeypair", "-alias", "messenger-server",
+                    "-keyalg", "RSA", "-keysize", "2048",
+                    "-keystore", keyStore.toString(), "-storetype", "PKCS12",
+                    "-storepass", "changeit", "-keypass", "changeit",
+                    "-validity", "365", "-dname", "CN=localhost",
+                    "-ext", "SAN=DNS:localhost,IP:127.0.0.1"));
+            runKeytool(keytool, List.of("-exportcert", "-alias", "messenger-server",
+                    "-keystore", keyStore.toString(), "-storepass", "changeit",
+                    "-rfc", "-file", cert.toString()));
+            runKeytool(keytool, List.of("-importcert", "-alias", "messenger-server",
+                    "-file", cert.toString(), "-keystore", trustStore.toString(),
+                    "-storetype", "PKCS12", "-storepass", "changeit", "-noprompt"));
+        }
 
         System.setProperty("javax.net.ssl.trustStore", trustStore.toString());
         System.setProperty("javax.net.ssl.trustStorePassword", "changeit");
-        return new TlsConfig(cwd, keyStore, trustStore);
+        return new TlsConfig(dir, keyStore, trustStore);
     }
 
     private void startLocalTlsServer(TlsConfig tlsConfig, int port) throws Exception {
@@ -652,7 +659,7 @@ public class ChatApp extends Application {
 
     private void configureLocalTrustStore() throws IOException {
         if (System.getProperty("javax.net.ssl.trustStore") != null) return;
-        Path trustStore = Paths.get("").toAbsolutePath().normalize().resolve("client-truststore.p12");
+        Path trustStore = tlsDir().resolve("client-truststore.p12");
         if (!Files.isRegularFile(trustStore))
             throw new IOException("TLS certificates not found. Reconnect to generate them automatically.");
         System.setProperty("javax.net.ssl.trustStore", trustStore.toString());
