@@ -142,12 +142,14 @@ public class ChatApp extends Application {
             new Thread(() -> {
                 try {
                     if (isLocal) {
-                        if (!isPortOpen(finalHost, finalPort)) {
+                        if (localServerProcess != null && localServerProcess.isAlive()) {
+                            configureLocalTrustStore();
+                        } else if (isPortOpen(finalHost, finalPort)) {
+                            throw new IOException("Port " + finalPort + " is in use by a non-TLS server. Stop it and reconnect.");
+                        } else {
                             Platform.runLater(() -> status(statusLabel, "Starting TLS server...", SUBTEXT));
                             TlsConfig cfg = setupLocalTls();
                             startLocalTlsServer(cfg, finalPort);
-                        } else {
-                            configureLocalTrustStore();
                         }
                     }
                     MessengerClient client = new MessengerClient(username, password, finalHost, finalPort, true);
@@ -644,7 +646,7 @@ public class ChatApp extends Application {
         if (System.getProperty("javax.net.ssl.trustStore") != null) return;
         Path trustStore = Paths.get("").toAbsolutePath().normalize().resolve("client-truststore.p12");
         if (!Files.isRegularFile(trustStore))
-            throw new IOException("Click 'Start local TLS server' before connecting with TLS");
+            throw new IOException("TLS certificates not found. Reconnect to generate them automatically.");
         System.setProperty("javax.net.ssl.trustStore", trustStore.toString());
         System.setProperty("javax.net.ssl.trustStorePassword", "changeit");
     }
