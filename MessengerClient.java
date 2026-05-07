@@ -3,7 +3,9 @@ import crypto.KeyDerivation;
 import crypto.KeyManager;
 
 import javax.crypto.SecretKey;
-import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.*;
+import java.nio.file.*;
+import java.security.KeyStore;
 import java.io.*;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -296,6 +298,25 @@ public class MessengerClient {
         Socket s = new Socket();
         s.connect(new InetSocketAddress(host, port), 5_000);
         if (!useTls) return s;
-        return ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(s, host, port, true);
+        try {
+            String tsPath = System.getProperty("javax.net.ssl.trustStore");
+            String tsPass = System.getProperty("javax.net.ssl.trustStorePassword", "changeit");
+            if (tsPath != null) {
+                KeyStore ts = KeyStore.getInstance("PKCS12");
+                try (InputStream in = Files.newInputStream(Paths.get(tsPath))) {
+                    ts.load(in, tsPass.toCharArray());
+                }
+                TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+                tmf.init(ts);
+                SSLContext ctx = SSLContext.getInstance("TLS");
+                ctx.init(null, tmf.getTrustManagers(), null);
+                return ctx.getSocketFactory().createSocket(s, host, port, true);
+            }
+            return ((SSLSocketFactory) SSLSocketFactory.getDefault()).createSocket(s, host, port, true);
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("TLS setup failed: " + e.getMessage(), e);
+        }
     }
 }
