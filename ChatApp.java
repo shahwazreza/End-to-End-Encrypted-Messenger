@@ -142,10 +142,8 @@ public class ChatApp extends Application {
             new Thread(() -> {
                 try {
                     if (isLocal) {
-                        if (localServerProcess != null && localServerProcess.isAlive()) {
+                        if (isPortOpen(finalHost, finalPort)) {
                             configureLocalTrustStore();
-                        } else if (isPortOpen(finalHost, finalPort)) {
-                            throw new IOException("Port " + finalPort + " is in use by a non-TLS server. Stop it and reconnect.");
                         } else {
                             Platform.runLater(() -> status(statusLabel, "Starting TLS server...", SUBTEXT));
                             TlsConfig cfg = setupLocalTls();
@@ -634,7 +632,17 @@ public class ChatApp extends Application {
         builder.redirectErrorStream(true);
         builder.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile.toFile()));
         localServerProcess = builder.start();
-        Thread.sleep(900);
+        long deadline = System.currentTimeMillis() + 15_000;
+        while (!isPortOpen("localhost", port)) {
+            if (!localServerProcess.isAlive()) {
+                String output = Files.isRegularFile(logFile)
+                        ? Files.readString(logFile, StandardCharsets.UTF_8).trim() : "";
+                throw new IOException(output.isBlank() ? "TLS server exited during startup" : output);
+            }
+            if (System.currentTimeMillis() > deadline)
+                throw new IOException("TLS server did not start within 15 seconds");
+            Thread.sleep(200);
+        }
         if (!localServerProcess.isAlive()) {
             String output = Files.isRegularFile(logFile)
                     ? Files.readString(logFile, StandardCharsets.UTF_8).trim() : "";
