@@ -8,7 +8,7 @@ import javax.net.ssl.SSLServerSocketFactory;
 public class Server {
 
     private static final int     PORT    = Integer.parseInt(System.getProperty("server.port", "5000"));
-    private static final boolean USE_TLS = Boolean.parseBoolean(System.getProperty("server.tls", "false"));
+    private static final boolean USE_TLS = Boolean.parseBoolean(System.getProperty("server.tls", "true"));
     private static final Logger  log     = Logger.getLogger(Server.class.getName());
 
     private static final ConcurrentHashMap<String, PrintWriter> online     = new ConcurrentHashMap<>();

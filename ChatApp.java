@@ -93,17 +93,6 @@ public class ChatApp extends Application {
         TextField hostField = inputField("Server host  (default: localhost)");
         TextField portField = inputField("Port  (default: 5000)");
 
-        CheckBox tlsCheck = new CheckBox("Use TLS");
-        tlsCheck.setSelected(Boolean.parseBoolean(System.getProperty("client.tls", "false")));
-        tlsCheck.setTextFill(Color.web(SUBTEXT));
-        tlsCheck.setFont(Font.font(12));
-        tlsCheck.setMaxWidth(Double.MAX_VALUE);
-
-        Button tlsSetupBtn = new Button("Start local TLS server");
-        tlsSetupBtn.setMaxWidth(Double.MAX_VALUE);
-        tlsSetupBtn.setFont(Font.font("System", FontWeight.BOLD, 12));
-        tlsSetupBtn.setStyle(secondaryBtnStyle());
-
         Button connectBtn = new Button("Sign In");
         connectBtn.setMaxWidth(Double.MAX_VALUE);
         connectBtn.setFont(Font.font("System", FontWeight.BOLD, 14));
@@ -148,15 +137,13 @@ public class ChatApp extends Application {
             connectBtn.setDisable(true);
             status(statusLabel, "Connecting...", SUBTEXT);
 
-            if (tlsCheck.isSelected()) {
-                try { configureLocalTrustStore(); }
-                catch (IOException ex) {
-                    status(statusLabel, ex.getMessage(), RED);
-                    connectBtn.setDisable(false); return;
-                }
+            try { configureLocalTrustStore(); }
+            catch (IOException ex) {
+                status(statusLabel, ex.getMessage(), RED);
+                connectBtn.setDisable(false); return;
             }
 
-            MessengerClient client = new MessengerClient(username, password, host, port, tlsCheck.isSelected());
+            MessengerClient client = new MessengerClient(username, password, host, port, true);
             client.setOnStatus(msg -> Platform.runLater(() -> status(statusLabel, msg, SUBTEXT)));
             client.setOnAuthSuccess(() -> Platform.runLater(() -> showDashboard(client)));
             client.setOnError(err -> Platform.runLater(() -> {
@@ -166,41 +153,11 @@ public class ChatApp extends Application {
             client.connectAsync(isRegister[0]);
         });
 
-        tlsSetupBtn.setOnAction(e -> {
-            tlsSetupBtn.setDisable(true);
-            status(statusLabel, "Setting up TLS...", SUBTEXT);
-            int serverPort;
-            try {
-                serverPort = portField.getText().trim().isEmpty() ? 5000 : Integer.parseInt(portField.getText().trim());
-            } catch (NumberFormatException ex) {
-                status(statusLabel, "Invalid port", RED);
-                tlsSetupBtn.setDisable(false); return;
-            }
-            new Thread(() -> {
-                try {
-                    if (isPortOpen("localhost", serverPort))
-                        throw new IOException("Port " + serverPort + " already in use. Stop the old server first.");
-                    TlsConfig cfg = setupLocalTls();
-                    startLocalTlsServer(cfg, serverPort);
-                    Platform.runLater(() -> {
-                        tlsCheck.setSelected(true);
-                        status(statusLabel, "TLS server running on port " + serverPort, GREEN);
-                        tlsSetupBtn.setDisable(false);
-                    });
-                } catch (Exception ex) {
-                    Platform.runLater(() -> {
-                        status(statusLabel, "TLS setup failed: " + ex.getMessage(), RED);
-                        tlsSetupBtn.setDisable(false);
-                    });
-                }
-            }).start();
-        });
-
         portField.setOnAction(ev -> connectBtn.fire());
 
         root.getChildren().addAll(icon, title, subtitle, modeRow,
                 usernameField, passwordField,
-                hostField, portField, tlsCheck, tlsSetupBtn,
+                hostField, portField,
                 connectBtn, statusLabel);
 
         primaryStage.setScene(new Scene(root, 420, 620));

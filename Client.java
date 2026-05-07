@@ -7,7 +7,7 @@ public class Client {
 
     private static final String  HOST    = System.getProperty("server.host", "localhost");
     private static final int     PORT    = Integer.parseInt(System.getProperty("server.port", "5000"));
-    private static final boolean USE_TLS = Boolean.parseBoolean(System.getProperty("client.tls", "false"));
+    private static final boolean USE_TLS = Boolean.parseBoolean(System.getProperty("client.tls", "true"));
 
     public static void main(String[] args) throws Exception {
         boolean register = args.length > 0 && "--register".equals(args[0]);
