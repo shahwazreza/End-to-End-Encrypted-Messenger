@@ -17,6 +17,7 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.logging.Logger;
@@ -40,6 +41,8 @@ public class MessengerClient {
     private final Set<String> knownUsers = ConcurrentHashMap.newKeySet();
     private final Map<String, SecretKey> sharedKeys = new ConcurrentHashMap<>();
     private final Map<String, CompletableFuture<String>> pendingKeys = new ConcurrentHashMap<>();
+    private final Map<String, AtomicLong> sendSeq = new ConcurrentHashMap<>();
+    private final Map<String, AtomicLong> recvSeq = new ConcurrentHashMap<>();
 
     private Runnable onAuthSuccess;
     private Consumer<List<String>> onUsersUpdated;
@@ -188,7 +191,8 @@ public class MessengerClient {
         String target = peer;
         if (out == null || target == null) throw new IllegalStateException("No chat selected");
         SecretKey shared = sharedKeyFor(target);
-        Encryption.EncryptedData enc = Encryption.encrypt(text, shared);
+        long seq = sendSeq.computeIfAbsent(target, k -> new AtomicLong(0)).incrementAndGet();
+        Encryption.EncryptedData enc = Encryption.encrypt(seq + "\n" + text, shared);
         byte[] combined = new byte[enc.iv.length + enc.ciphertext.length];
         System.arraycopy(enc.iv, 0, combined, 0, enc.iv.length);
         System.arraycopy(enc.ciphertext, 0, combined, enc.iv.length, enc.ciphertext.length);
@@ -209,14 +213,25 @@ public class MessengerClient {
             data.iv = Arrays.copyOfRange(bytes, 0, 12);
             data.ciphertext = Arrays.copyOfRange(bytes, 12, bytes.length);
             String decrypted = Encryption.decrypt(data, shared);
-            MessageHistory.append(username, sender, false, decrypted);
+            int nl = decrypted.indexOf('\n');
+            if (nl < 0) { fireStatus("Malformed message from " + sender); return; }
+            long seq;
+            try { seq = Long.parseLong(decrypted.substring(0, nl)); }
+            catch (NumberFormatException e) { fireStatus("Malformed message from " + sender); return; }
+            long last = recvSeq.computeIfAbsent(sender, k -> new AtomicLong(0)).getAndUpdate(v -> seq > v ? seq : v);
+            if (seq <= last) {
+                log.warning("Rejected replayed message from " + sender + " (seq=" + seq + ", last=" + last + ")");
+                return;
+            }
+            String text = decrypted.substring(nl + 1);
+            MessageHistory.append(username, sender, false, text);
 
             if (sender.equals(peer) && onMessageReceived != null) {
-                onMessageReceived.accept(decrypted);
+                onMessageReceived.accept(text);
             } else if (!sender.equals(peer) && onNotification != null) {
                 onNotification.accept(sender);
             }
-            if (onMessageReceivedFrom != null) onMessageReceivedFrom.accept(sender, decrypted);
+            if (onMessageReceivedFrom != null) onMessageReceivedFrom.accept(sender, text);
         } catch (Exception e) {
             fireStatus("Could not decrypt a message from " + sender);
             log.warning("Decryption failed: " + e.getMessage());

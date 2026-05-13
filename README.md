@@ -154,4 +154,4 @@ java -Dserver.host=192.168.1.10 -Dserver.port=6000 Client alice mypassword bob
 - ~~Persistent key storage~~
 - ~~Persistent message history~~
 - Group messaging
-- Message sequence numbers for replay protection
+- ~~Message sequence numbers for replay protection~~
